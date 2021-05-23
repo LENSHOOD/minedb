@@ -72,37 +72,42 @@ impl Replacer for ClockReplacer {
     }
 }
 
-#[test]
-fn test_clock_replacer() {
-    let mut replacer = ClockReplacer::new(7);
+#[cfg(test)]
+mod tests {
+    use crate::buffer::replacer::{ClockReplacer, Replacer};
 
-    // Scenario: unpin six elements, i.e. add them to the replacer.
-    replacer.unpin(1);
-    replacer.unpin(2);
-    replacer.unpin(3);
-    replacer.unpin(4);
-    replacer.unpin(5);
-    replacer.unpin(6);
-    replacer.unpin(1);
+    #[test]
+    fn test_clock_replacer() {
+        let mut replacer = ClockReplacer::new(7);
 
-    assert_eq!(replacer.size(), 6);
+        // Scenario: unpin six elements, i.e. add them to the replacer.
+        replacer.unpin(1);
+        replacer.unpin(2);
+        replacer.unpin(3);
+        replacer.unpin(4);
+        replacer.unpin(5);
+        replacer.unpin(6);
+        replacer.unpin(1);
 
-    // Scenario: get three victims from the clock.
-    assert_eq!(replacer.victim(), (true, 1));
-    assert_eq!(replacer.victim(), (true, 2));
-    assert_eq!(replacer.victim(), (true, 3));
+        assert_eq!(replacer.size(), 6);
 
-    // Scenario: pin elements in the replacer.
-    // Note that 3 has already been victimized, so pinning 3 should have no effect.
-    replacer.pin(3);
-    replacer.pin(4);
-    assert_eq!(replacer.size(), 2);
+        // Scenario: get three victims from the clock.
+        assert_eq!(replacer.victim(), (true, 1));
+        assert_eq!(replacer.victim(), (true, 2));
+        assert_eq!(replacer.victim(), (true, 3));
 
-    // Scenario: unpin 4. We expect that the reference bit of 4 will be set to 1.
-    replacer.unpin(4);
+        // Scenario: pin elements in the replacer.
+        // Note that 3 has already been victimized, so pinning 3 should have no effect.
+        replacer.pin(3);
+        replacer.pin(4);
+        assert_eq!(replacer.size(), 2);
 
-    // Scenario: continue looking for victims. We expect these victims.
-    assert_eq!(replacer.victim(), (true, 5));
-    assert_eq!(replacer.victim(), (true, 6));
-    assert_eq!(replacer.victim(), (true, 4));
+        // Scenario: unpin 4. We expect that the reference bit of 4 will be set to 1.
+        replacer.unpin(4);
+
+        // Scenario: continue looking for victims. We expect these victims.
+        assert_eq!(replacer.victim(), (true, 5));
+        assert_eq!(replacer.victim(), (true, 6));
+        assert_eq!(replacer.victim(), (true, 4));
+    }
 }
