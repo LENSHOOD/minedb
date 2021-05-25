@@ -1,4 +1,4 @@
-trait Replacer {
+pub trait Replacer {
     fn victim(&mut self) -> (bool, usize);
 
     fn pin(&mut self, frame_id: usize);
@@ -11,7 +11,7 @@ trait Replacer {
 const NO_FRAME: i8 = -1;
 const REF_ZERO: i8 = 0;
 const REF_ONE: i8 = 1;
-struct ClockReplacer {
+pub struct ClockReplacer {
     size: usize,
     last: usize,
     frame_holder: Vec<i8>
