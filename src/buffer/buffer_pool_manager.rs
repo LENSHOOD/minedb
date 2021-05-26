@@ -16,7 +16,7 @@ struct BufferPoolManager {
 }
 
 impl BufferPoolManager {
-    fn new(pool_size: usize) -> BufferPoolManager {
+    fn new_default(pool_size: usize) -> BufferPoolManager {
         BufferPoolManager {
             pool_size,
             page_table: HashMap::new(),
@@ -24,6 +24,17 @@ impl BufferPoolManager {
             buffer_pool: vec![EMPTY_PAGE; pool_size],
             replacer: Box::new(ClockReplacer::new(pool_size)),
             disk_manager: Box::new(FakeDiskManager::new())
+        }
+    }
+
+    fn new(pool_size: usize, replacer: Box<dyn Replacer>, disk_manager: Box<dyn DiskManager>) -> BufferPoolManager {
+        BufferPoolManager {
+            pool_size,
+            page_table: HashMap::new(),
+            free_list: (0..pool_size-1).collect(),
+            buffer_pool: vec![EMPTY_PAGE; pool_size],
+            replacer,
+            disk_manager
         }
     }
 
@@ -100,13 +111,25 @@ impl BufferPoolManager {
 mod tests {
     use crate::buffer::buffer_pool_manager::BufferPoolManager;
     use crate::storage::page::PageId;
+    use crate::buffer::replacer::ClockReplacer;
+    use crate::storage::disk_manager::*;
 
     const TEST_POOL_SIZE: usize = 10;
     #[test]
     fn should_fetch_page_from_disk_and_add_it_to_pool_when_no_page_found() {
         // given
-        let mut bpm = BufferPoolManager::new(TEST_POOL_SIZE);
         let fake_id: PageId = 1;
+
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_read_page()
+            .withf(move |page_id: &PageId, page_data: &[u8]| { *page_id == fake_id})
+            .return_const(());
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
 
         // when
         let page = bpm.fetch_page(fake_id).unwrap();

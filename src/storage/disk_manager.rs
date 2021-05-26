@@ -1,6 +1,9 @@
 use crate::storage::page::{PageId, PAGE_SIZE};
 use std::io::{Result, Error, ErrorKind};
+#[cfg(test)]
+use mockall::{automock, predicate::*};
 
+#[cfg_attr(test, automock)]
 pub trait DiskManager {
     fn allocate_page(&mut self) -> Result<PageId>;
 
@@ -63,7 +66,6 @@ impl DiskManager for FakeDiskManager {
 
 #[cfg(test)]
 mod tests {
-    use std::io::*;
     use crate::storage::disk_manager::{DiskManager, FakeDiskManager};
     use crate::storage::page::*;
 
