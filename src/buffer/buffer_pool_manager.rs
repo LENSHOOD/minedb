@@ -42,7 +42,7 @@ impl BufferPoolManager {
     // 2.     If R is dirty, write it back to the disk.
     // 3.     Delete R from the page table and insert P.
     // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
-    fn fetch_page(&mut self, pid: PageId) -> io::Result<&Page> {
+    fn fetch_page(&mut self, pid: PageId) -> io::Result<&mut Page> {
         if self.page_table.contains_key(&pid) {
             let fid = self.get_exist_frame(pid);
             self.replacer.pin(fid);
@@ -72,7 +72,7 @@ impl BufferPoolManager {
         *self.page_table.get(&pid).unwrap()
     }
 
-    fn update_page(&mut self, fid: FrameId, new_pid: PageId) -> &Page {
+    fn update_page(&mut self, fid: FrameId, new_pid: PageId) -> &mut Page {
         let page = &mut self.buffer_pool[fid];
         if page.is_dirty() {
             self.disk_manager.write_page(page.get_id(), page.get_data());
@@ -92,6 +92,7 @@ impl BufferPoolManager {
         match self.page_table.get(&pid) {
             Some(fid) => {
                 let p = &mut self.buffer_pool[*fid];
+                p.unpin();
                 p.set_dirty(is_dirty);
                 self.replacer.unpin(*fid);
                 true
@@ -101,7 +102,14 @@ impl BufferPoolManager {
     }
 
     fn flush_page(&mut self, pid: PageId) -> bool {
-        todo!()
+        return match self.page_table.get(&pid) {
+            Some(fid) => {
+                let p = &mut self.buffer_pool[*fid];
+                self.disk_manager.write_page(p.get_id(), p.get_data());
+                true
+            },
+            None => {false}
+        }
     }
 
     fn new_page(&self) -> &Page {
@@ -115,7 +123,7 @@ impl BufferPoolManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::buffer::buffer_pool_manager::BufferPoolManager;
+    use crate::buffer::buffer_pool_manager::{BufferPoolManager, FrameId};
     use crate::storage::page::PageId;
     use crate::buffer::replacer::ClockReplacer;
     use crate::storage::disk_manager::*;
@@ -270,5 +278,75 @@ mod tests {
         let error = result.err().unwrap();
         assert_eq!(error.kind(), ErrorKind::Other);
         assert_eq!(error.to_string(), "Out of memory to allocate page.");
+    }
+
+    #[test]
+    fn should_unpin_page() {
+        // given
+        let mut bpm = BufferPoolManager::new_default(TEST_POOL_SIZE);
+        let fake_id_1: PageId = 1;
+        let fid_to_p1: FrameId = 4;
+        let fake_id_2: PageId = 2;
+        let fid_to_p2: FrameId = 3;
+
+        // when
+        {
+            let p1 = bpm.fetch_page(fake_id_1).unwrap();
+            assert_eq!(p1.get_pin_count(), 1);
+            let p2 = bpm.fetch_page(fake_id_2).unwrap();
+            assert_eq!(p2.get_pin_count(), 1);
+        }
+
+        bpm.unpin_page(fake_id_1, false);
+        bpm.unpin_page(fake_id_2, true);
+
+        // then
+        assert_eq!(*bpm.page_table.get(&fake_id_1).unwrap(), fid_to_p1);
+        assert_eq!(*bpm.page_table.get(&fake_id_2).unwrap(), fid_to_p2);
+        assert!(!bpm.free_list.contains(&fid_to_p1));
+        assert!(!bpm.free_list.contains(&fid_to_p2));
+
+        let p1 = &mut bpm.buffer_pool[fid_to_p1];
+        assert_eq!(p1.get_pin_count(), 0);
+        assert!(!p1.is_dirty());
+        let p2 = &mut bpm.buffer_pool[fid_to_p2];
+        assert_eq!(p2.get_pin_count(), 0);
+        assert!(p2.is_dirty());
+    }
+
+    #[test]
+    fn should_flush_page() {
+        // given
+        let fake_id_1: PageId = 1;
+        let fid_to_p1: FrameId = 4;
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_read_page()
+            .return_const(());
+
+        dm_mock
+            // then
+            .expect_write_page()
+            .withf(move |page_id: &PageId, page_data: &[u8]| {
+                *page_id == fake_id_1
+                && page_data[0] == 1
+                && page_data[1] == 2
+                && page_data[2] == 3
+            })
+            .return_const(());
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
+
+        // when
+        let mut p1 = bpm.fetch_page(fake_id_1).unwrap();
+        let page_data = p1.get_data();
+        page_data[0] = 1;
+        page_data[1] = 2;
+        page_data[2] = 3;
+
+        bpm.flush_page(fake_id_1);
     }
 }

@@ -52,6 +52,10 @@ impl Page {
     pub fn pin(&mut self) {
         self.pin_count+=1;
     }
+
+    pub fn unpin(&mut self) {
+        self.pin_count-=1;
+    }
 }
 
 impl Clone for Page {
