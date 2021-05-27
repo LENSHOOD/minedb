@@ -51,28 +51,30 @@ impl BufferPoolManager {
             return Ok(p)
         }
 
-        return match self.free_list.pop() {
-            Some(frame_id) => {
-                let p = self.update_page(frame_id, pid);
-                Ok(p)
-            },
-            None => {
-                let (success, vic_fid) = (&mut self.replacer).victim();
-                if !success {
-                    return Err(Error::new(ErrorKind::Other, "Out of memory to allocate page."))
-                }
-                self.replacer.pin(vic_fid);
-                let p = self.update_page(vic_fid, pid);
-                Ok(p)
-            }
-        };
+        let fid = self.get_available_frame()?;
+        Ok(self.update_page(fid, pid, false))
     }
 
     fn get_exist_frame(&self, pid: PageId) -> FrameId {
         *self.page_table.get(&pid).unwrap()
     }
 
-    fn update_page(&mut self, fid: FrameId, new_pid: PageId) -> &mut Page {
+    fn get_available_frame(&mut self) -> io::Result<FrameId> {
+        match self.free_list.pop() {
+            Some(frame_id) => Ok(frame_id),
+            None => {
+                let (success, vic_fid) = (&mut self.replacer).victim();
+                if !success {
+                    return Err(Error::new(ErrorKind::Other, "Out of memory to allocate page."))
+                }
+                Ok(vic_fid)
+            }
+        }
+    }
+
+    fn update_page(&mut self, fid: FrameId, new_pid: PageId, new_page: bool) -> &mut Page {
+        self.replacer.pin(fid);
+
         let page = &mut self.buffer_pool[fid];
         if page.is_dirty() {
             self.disk_manager.write_page(page.get_id(), page.get_data());
@@ -81,9 +83,13 @@ impl BufferPoolManager {
 
         self.page_table.remove(&page.get_id());
         self.page_table.insert(new_pid, fid);
+
         page.set_id(new_pid);
         page.pin();
-        &self.disk_manager.read_page(new_pid, page.get_data());
+
+        if !new_page {
+            self.disk_manager.read_page(new_pid, page.get_data());
+        }
 
         page
     }
@@ -112,8 +118,10 @@ impl BufferPoolManager {
         }
     }
 
-    fn new_page(&self) -> &Page {
-        todo!()
+    fn new_page(&mut self) -> io::Result<&mut Page> {
+        let fid = self.get_available_frame()?;
+        let pid = self.disk_manager.allocate_page()?;
+        Ok(self.update_page(fid, pid, true))
     }
 
     fn delete_page(pid: PageId) -> bool {
@@ -127,13 +135,14 @@ mod tests {
     use crate::storage::page::PageId;
     use crate::buffer::replacer::ClockReplacer;
     use crate::storage::disk_manager::*;
-    use std::io::ErrorKind;
+    use std::io::*;
 
     const TEST_POOL_SIZE: usize = 5;
     #[test]
     fn should_fetch_page_from_disk_and_add_it_to_pool_when_no_page_found() {
         // given
         let fake_id: PageId = 1;
+        let fid_to_p1: FrameId = 4;
 
         let mut dm_mock = MockDiskManager::new();
         dm_mock
@@ -152,8 +161,8 @@ mod tests {
         // then
         assert_eq!(page.get_id(), fake_id);
         assert_eq!(page.get_pin_count(), 1);
-        assert_eq!(*bpm.page_table.get(&fake_id).unwrap(), 4 as usize);
-        assert!(!bpm.free_list.contains(&4));
+        assert_eq!(*bpm.page_table.get(&fake_id).unwrap(), fid_to_p1);
+        assert!(!bpm.free_list.contains(&fid_to_p1));
     }
 
     #[test]
@@ -318,7 +327,6 @@ mod tests {
     fn should_flush_page() {
         // given
         let fake_id_1: PageId = 1;
-        let fid_to_p1: FrameId = 4;
         let mut dm_mock = MockDiskManager::new();
         dm_mock
             .expect_read_page()
@@ -341,12 +349,60 @@ mod tests {
             Box::new(dm_mock));
 
         // when
-        let mut p1 = bpm.fetch_page(fake_id_1).unwrap();
+        let p1 = bpm.fetch_page(fake_id_1).unwrap();
         let page_data = p1.get_data();
         page_data[0] = 1;
         page_data[1] = 2;
         page_data[2] = 3;
 
         bpm.flush_page(fake_id_1);
+    }
+
+    #[test]
+    fn should_allocate_new_page() {
+        // given
+        let fake_id_1: PageId = 1;
+        let fid_to_p1: FrameId = 4;
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_allocate_page()
+            .return_once(move || Ok(fake_id_1));
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
+
+        // when
+        let p1 = bpm.new_page().unwrap();
+
+        // then
+        assert_eq!(p1.get_id(), fake_id_1);
+        assert_eq!(p1.get_pin_count(), 1);
+        assert_eq!(*bpm.page_table.get(&fake_id_1).unwrap(), fid_to_p1);
+        assert!(!bpm.free_list.contains(&fid_to_p1));
+    }
+
+    #[test]
+    fn should_fail_when_disk_manager_cannot_allocate_page() {
+        // given
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_allocate_page()
+            .return_once(move || Err(Error::new(ErrorKind::Other, "Exceeded max page.")));
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
+
+        // when
+        let result = bpm.new_page();
+
+        // then
+        assert!(result.is_err());
+        let error = result.err().unwrap();
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert_eq!(error.to_string(), "Exceeded max page.");
     }
 }
