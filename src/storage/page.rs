@@ -37,6 +37,10 @@ impl Page {
         self.id
     }
 
+    pub fn set_dirty(&mut self, is_dirty: bool) {
+        self.dirty_flag = is_dirty
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty_flag
     }
