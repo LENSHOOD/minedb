@@ -7,7 +7,7 @@ use mockall::{automock, predicate::*};
 pub trait DiskManager {
     fn allocate_page(&mut self) -> Result<PageId>;
 
-    fn deallocate_page(&self, page_id: PageId);
+    fn deallocate_page(&self, page_id: PageId) -> Result<bool> ;
 
     fn write_page(&mut self, page_id: PageId, page_data: &[u8]);
 
@@ -40,7 +40,8 @@ impl DiskManager for FakeDiskManager {
         Ok(page_id_to_returned)
     }
 
-    fn deallocate_page(&self, _page_id: PageId) {
+    fn deallocate_page(&self, _page_id: PageId) -> Result<bool> {
+        Ok(true)
     }
 
     fn write_page(&mut self, page_id: PageId, page_data: &[u8]) {

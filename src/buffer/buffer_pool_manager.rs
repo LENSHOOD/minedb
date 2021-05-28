@@ -124,8 +124,29 @@ impl BufferPoolManager {
         Ok(self.update_page(fid, pid, true))
     }
 
-    fn delete_page(pid: PageId) -> bool {
-        todo!()
+    fn delete_page(&mut self, pid: PageId) -> io::Result<bool> {
+        match self.page_table.get(&pid) {
+            Some(fid) => {
+                let page = &mut self.buffer_pool[*fid];
+                if page.get_pin_count() != 0 {
+                    return Err(Error::new(ErrorKind::Other, "Cannot delete page that is in use."))
+                }
+
+                if page.is_dirty() {
+                    self.disk_manager.write_page(page.get_id(), page.get_data());
+                }
+                self.free_list.push(*fid);
+                self.page_table.remove(&pid);
+            },
+            None => {}
+        };
+
+        let done = self.disk_manager.deallocate_page(pid)?;
+        if !done {
+            return Ok(false)
+        }
+
+        Ok(true)
     }
 }
 
@@ -405,4 +426,83 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Other);
         assert_eq!(error.to_string(), "Exceeded max page.");
     }
+
+    #[test]
+    fn should_delete_page() {
+        // given
+        let fake_id_1: PageId = 1;
+        let fid_to_p1: FrameId = 4;
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_allocate_page()
+            .return_once(move || Ok(fake_id_1));
+        dm_mock
+            .expect_deallocate_page()
+            .return_once(move |_| Ok(true));
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
+
+        // when
+        bpm.new_page().unwrap();
+        bpm.unpin_page(fake_id_1, false);
+        let deleted = bpm.delete_page(fake_id_1);
+
+        // then
+        assert!(deleted.unwrap());
+        assert!(!bpm.page_table.contains_key(&fake_id_1));
+        assert!(bpm.free_list.contains(&fid_to_p1));
+    }
+
+    #[test]
+    fn should_fail_to_delete_when_page_pin_count_not_zero() {
+        // given
+        let fake_id_1: PageId = 1;
+        let fid_to_p1: FrameId = 4;
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_allocate_page()
+            .return_once(move || Ok(fake_id_1));
+        dm_mock
+            .expect_deallocate_page()
+            .return_once(move |_| Ok(true));
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
+
+        // when
+        bpm.new_page().unwrap();
+        let deleted = bpm.delete_page(fake_id_1);
+
+        // then
+        assert!(deleted.is_err());
+        assert!(bpm.page_table.contains_key(&fake_id_1));
+        assert!(!bpm.free_list.contains(&fid_to_p1));
+    }
+
+    #[test]
+    fn should_do_nothing_but_return_false_when_page_not_found() {
+        // given
+        let fake_id_1: PageId = 1;
+        let mut dm_mock = MockDiskManager::new();
+        dm_mock
+            .expect_deallocate_page()
+            .return_once(move |_| Ok(false));
+
+        let mut bpm = BufferPoolManager::new(
+            TEST_POOL_SIZE,
+            Box::new(ClockReplacer::new(TEST_POOL_SIZE)),
+            Box::new(dm_mock));
+
+        // when
+        let deleted = bpm.delete_page(fake_id_1);
+
+        // then
+        assert!(!deleted.unwrap());
+    }
+
 }
