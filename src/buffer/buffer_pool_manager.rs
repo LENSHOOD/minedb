@@ -169,7 +169,7 @@ mod tests {
         dm_mock
             .expect_read_page()
             .withf(move |page_id: &PageId, _page_data: &[u8]| { *page_id == fake_id})
-            .return_const(());
+            .return_once(move |_, _| Ok(()));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,
@@ -197,7 +197,7 @@ mod tests {
         dm_mock
             .expect_read_page()
             .times(3)
-            .return_const(());
+            .returning(move |_, _| Ok(()));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,
@@ -229,13 +229,13 @@ mod tests {
         dm_mock
             .expect_read_page()
             .times(7)
-            .return_const(());
+            .returning(move |_, _| Ok(()));
 
         dm_mock
             .expect_write_page()
             .times(1)
             .withf(move |page_id: &PageId, _page_data: &[u8]| { *page_id == fake_id2})
-            .return_const(());
+            .returning(move |_, _| Ok(()));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,
@@ -286,7 +286,7 @@ mod tests {
         let mut dm_mock = MockDiskManager::new();
         dm_mock
             .expect_read_page()
-            .return_const(());
+            .returning(move |_, _| Ok(()));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,
@@ -351,7 +351,7 @@ mod tests {
         let mut dm_mock = MockDiskManager::new();
         dm_mock
             .expect_read_page()
-            .return_const(());
+            .returning(move |_, _| Ok(()));
 
         dm_mock
             // then
@@ -362,7 +362,7 @@ mod tests {
                 && page_data[1] == 2
                 && page_data[2] == 3
             })
-            .return_const(());
+            .returning(move |_, _| Ok(()));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,
@@ -387,7 +387,7 @@ mod tests {
         let mut dm_mock = MockDiskManager::new();
         dm_mock
             .expect_allocate_page()
-            .return_once(move || Ok(fake_id_1));
+            .returning(move || Ok(fake_id_1));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,
@@ -410,7 +410,7 @@ mod tests {
         let mut dm_mock = MockDiskManager::new();
         dm_mock
             .expect_allocate_page()
-            .return_once(move || Err(Error::new(ErrorKind::Other, "Exceeded max page.")));
+            .returning(move || Err(Error::new(ErrorKind::Other, "Exceeded max page.")));
 
         let mut bpm = BufferPoolManager::new(
             TEST_POOL_SIZE,

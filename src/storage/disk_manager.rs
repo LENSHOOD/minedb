@@ -1,5 +1,5 @@
 use crate::storage::page::{PageId, PAGE_SIZE};
-use std::io::{Result, Error, ErrorKind};
+use std::io::{Result, Error, ErrorKind, Seek, Write, SeekFrom, Read};
 #[cfg(test)]
 use mockall::{automock, predicate::*};
 use std::fs::{File, OpenOptions};
@@ -11,9 +11,9 @@ pub trait DiskManager {
 
     fn deallocate_page(&mut self, page_id: PageId) -> Result<bool> ;
 
-    fn write_page(&mut self, page_id: PageId, page_data: &[u8]);
+    fn write_page(&mut self, page_id: PageId, page_data: &[u8]) -> Result<()>;
 
-    fn read_page(&self, page_id: PageId, page_data: &mut [u8]);
+    fn read_page(&mut self, page_id: PageId, page_data: &mut [u8]) -> Result<()>;
 }
 
 const MAX_FILE_PAGES: usize = 0x1 << 16;
@@ -46,24 +46,28 @@ impl DiskManager for FakeDiskManager {
         Ok(true)
     }
 
-    fn write_page(&mut self, page_id: PageId, page_data: &[u8]) {
+    fn write_page(&mut self, page_id: PageId, page_data: &[u8]) -> Result<()> {
         if page_id > MAX_FILE_PAGES {
             panic!("Illegal page id.")
         }
 
         for i in 0..PAGE_SIZE {
-            self.fake_file[i + page_id * PAGE_SIZE] = page_data[i]
+            self.fake_file[i + page_id * PAGE_SIZE] = page_data[i];
         }
+
+        Ok(())
     }
 
-    fn read_page(&self, page_id: PageId, page_data: &mut [u8]) {
+    fn read_page(&mut self, page_id: PageId, page_data: &mut [u8]) -> Result<()> {
         if page_id > MAX_FILE_PAGES {
             panic!("Illegal page id.")
         }
 
         for i in 0..PAGE_SIZE {
-            page_data[i] = self.fake_file[i + page_id * PAGE_SIZE]
+            page_data[i] = self.fake_file[i + page_id * PAGE_SIZE];
         }
+
+        Ok(())
     }
 }
 
@@ -75,13 +79,28 @@ pub struct FileDiskManager {
 
 impl FileDiskManager {
     pub fn new(file_path: &Path) -> FileDiskManager {
+        if !file_path.exists() {
+            let mut new_file = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(file_path)
+                .unwrap();
+            let empty_data = [0 as u8; PAGE_SIZE];
+            for _i in 0..MAX_FILE_PAGES {
+                new_file.write_all(&empty_data).unwrap()
+            }
+            new_file.flush();
+        }
+
         FileDiskManager {
             page_counter: 0,
             page_table: [0; MAX_FILE_PAGES >> 3],
             file: OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(file_path).unwrap()
+                .open(file_path)
+                .unwrap()
         }
     }
 
@@ -122,6 +141,24 @@ impl FileDiskManager {
         let slot_bit = slot % 8;
         self.page_table[slot_byte] &= !(0x1 << slot_bit);
     }
+
+    fn validate_page_id(&self, pid: PageId) -> Result<()> {
+        if pid >= MAX_FILE_PAGES {
+            return Err(Error::new(ErrorKind::Other, "Invalid page id."))
+        }
+
+        Ok(())
+    }
+
+    fn validate_allocation(&self, pid: PageId) -> Result<()> {
+        let slot_byte = pid / 8;
+        let slot_bit = pid % 8;
+        if (self.page_table[slot_byte] >> slot_bit) & 0x1 != 0x1 {
+            return Err(Error::new(ErrorKind::Other, "Page id not allocate."))
+        }
+
+        Ok(())
+    }
 }
 
 impl DiskManager for FileDiskManager {
@@ -137,30 +174,36 @@ impl DiskManager for FileDiskManager {
     }
 
     fn deallocate_page(&mut self, page_id: usize) -> Result<bool> {
-        if page_id >= MAX_FILE_PAGES {
-            return Err(Error::new(ErrorKind::Other, "Invalid page id."))
-        }
-
+        self.validate_page_id(page_id)?;
         self.clear_slot(page_id);
         Ok(true)
     }
 
-    fn write_page(&mut self, page_id: usize, page_data: &[u8]) {
-        todo!()
+    fn write_page(&mut self, page_id: usize, page_data: &[u8]) -> Result<()> {
+        self.validate_page_id(page_id)?;
+        self.validate_allocation(page_id)?;
+
+        self.file.seek(SeekFrom::Start((page_id * PAGE_SIZE) as u64)).unwrap();
+        self.file.write_all(page_data)
     }
 
-    fn read_page(&self, page_id: usize, page_data: &mut [u8]) {
-        todo!()
+    fn read_page(&mut self, page_id: usize, page_data: &mut [u8]) -> Result<()> {
+        self.validate_page_id(page_id)?;
+        self.validate_allocation(page_id)?;
+
+        self.file.seek(SeekFrom::Start((page_id * PAGE_SIZE) as u64)).unwrap();
+        self.file.read_exact(page_data)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::disk_manager::{DiskManager, FakeDiskManager, FileDiskManager};
+    use crate::storage::disk_manager::{DiskManager, FakeDiskManager, FileDiskManager, MAX_FILE_PAGES};
     use crate::storage::page::*;
     use std::fs::{File, remove_file};
     use std::path::Path;
     use rand::Rng;
+    use std::os::macos::fs::MetadataExt;
 
     #[test]
     fn test_fake_disk_manager_can_allocate_page_id() {
@@ -188,35 +231,46 @@ mod tests {
         }
 
         // when
-        fake_disk_manager.write_page(page_id_2, page_data);
+        fake_disk_manager.write_page(page_id_2, page_data).unwrap();
 
         // then
         let mut data_written: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
-        fake_disk_manager.read_page(page_id_1, &mut data_written);
+        fake_disk_manager.read_page(page_id_1, &mut data_written).unwrap();
         assert_eq!(data_written[0], 0x00);
         assert_eq!(data_written[5], 0x00);
         assert_eq!(data_written[9], 0x00);
 
-        fake_disk_manager.read_page(page_id_2, &mut data_written);
+        fake_disk_manager.read_page(page_id_2, &mut data_written).unwrap();
         assert_eq!(data_written[0], 0x00);
         assert_eq!(data_written[5], 0x05);
         assert_eq!(data_written[9], 0x09);
     }
 
-    fn init_file_before() {
-        File::create(TEST_FILE_PATH).unwrap();
-    }
-
-    fn init_file_after() {
-        remove_file(TEST_FILE_PATH).unwrap()
-    }
-
     const TEST_FILE_PATH: &str = "./test_storage";
     #[test]
-    fn should_allocate_and_deallocate_page() {
-        init_file_before();
+    fn should_create_and_init_file_if_not_exists() {
+        let path = TEST_FILE_PATH.to_string() + "1";
+        remove_file(path.as_str());
 
-        let mut fdm = FileDiskManager::new(Path::new(TEST_FILE_PATH));
+        FileDiskManager::new(Path::new(path.as_str()));
+
+        let file_path = Path::new(path.as_str());
+        assert!(file_path.exists());
+        assert!(file_path.is_file());
+        assert_eq!(file_path.file_name().unwrap(), "test_storage1");
+
+        let metadata = file_path.metadata().unwrap();
+        assert_eq!(metadata.st_size(), (PAGE_SIZE * MAX_FILE_PAGES) as u64);
+
+        remove_file(path.as_str());
+    }
+
+    #[test]
+    fn should_allocate_and_deallocate_page() {
+        let path = TEST_FILE_PATH.to_string() + "2";
+
+        // setup
+        let mut fdm = FileDiskManager::new(Path::new(path.as_str()));
 
         // first page id should be 0
         let pid1 = fdm.allocate_page().unwrap();
@@ -257,6 +311,33 @@ mod tests {
         }
         assert_eq!(expected_page_ids.sort(), real_allocate_page_ids.sort());
 
-        init_file_after();
+        remove_file(path.as_str());
+    }
+
+    #[test]
+    fn should_write_page_data_then_read_it_out() {
+        let path = TEST_FILE_PATH.to_string() + "3";
+
+        // given
+        let mut rng = rand::thread_rng();
+        let mut data = [0 as u8; PAGE_SIZE];
+        for i in 0..PAGE_SIZE {
+            data[i] = rng.gen();
+        }
+        let mut fdm = FileDiskManager::new(Path::new(path.as_str()));
+        let mut pid: PageId = EMPTY_PAGE.get_id();
+        for _i in 0..rng.gen_range(0..MAX_FILE_PAGES - 1) + 1 {
+            pid = fdm.allocate_page().unwrap()
+        }
+
+        // when
+        fdm.write_page(pid, &data).unwrap();
+
+        // then
+        let mut read_data = [0 as u8; PAGE_SIZE];
+        fdm.read_page(pid, &mut read_data);
+        assert_eq!(data, read_data);
+
+        remove_file(path.as_str());
     }
 }
