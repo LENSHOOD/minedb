@@ -225,7 +225,7 @@ mod tests {
         let page_id_2 = fake_disk_manager.allocate_page().unwrap();
 
         let mut page = Page::new(page_id_2);
-        let page_data = page.get_data();
+        let page_data = page.get_data_mut();
         for i in 0..10 {
             page_data[i] = (0x00 + i) as u8
         }

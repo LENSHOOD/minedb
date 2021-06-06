@@ -25,7 +25,11 @@ impl Page {
         }
     }
 
-    pub fn get_data(&mut self) -> &mut [u8] {
+    pub fn get_data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn get_data_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
 

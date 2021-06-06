@@ -99,7 +99,7 @@ impl BufferPoolManager {
         page_guard.pin();
 
         if !new_page {
-            self.disk_manager.read_page(new_pid, page_guard.get_data());
+            self.disk_manager.read_page(new_pid, page_guard.get_data_mut());
         }
 
         page
@@ -390,7 +390,7 @@ mod tests {
         // when
         {
             let mut p1 = bpm.fetch_page(fake_id_1).unwrap().write().unwrap();
-            let page_data = p1.get_data();
+            let page_data = p1.get_data_mut();
             page_data[0] = 1;
             page_data[1] = 2;
             page_data[2] = 3;
