@@ -4,12 +4,13 @@ use crate::storage::page::*;
 use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
+use std::sync::RwLock;
 
 type FrameId = usize;
 struct BufferPoolManager {
     page_table: HashMap<PageId, FrameId>,
     free_list: Vec<FrameId>,
-    buffer_pool: Vec<Page>,
+    buffer_pool: Vec<RwLock<Page>>,
     replacer: Box<dyn Replacer>,
     disk_manager: Box<dyn DiskManager>
 }
@@ -19,7 +20,7 @@ impl BufferPoolManager {
         BufferPoolManager {
             page_table: HashMap::new(),
             free_list: (0..pool_size).collect(),
-            buffer_pool: vec![EMPTY_PAGE; pool_size],
+            buffer_pool: BufferPoolManager::build_empty_page_pool(pool_size),
             replacer: Box::new(ClockReplacer::new(pool_size)),
             disk_manager: Box::new(FakeDiskManager::new())
         }
@@ -29,10 +30,18 @@ impl BufferPoolManager {
         BufferPoolManager {
             page_table: HashMap::new(),
             free_list: (0..pool_size).collect(),
-            buffer_pool: vec![EMPTY_PAGE; pool_size],
+            buffer_pool: BufferPoolManager::build_empty_page_pool(pool_size),
             replacer,
             disk_manager
         }
+    }
+
+    fn build_empty_page_pool(pool_size: usize) -> Vec<RwLock<Page>> {
+        let mut bf = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            bf.push(RwLock::new(EMPTY_PAGE));
+        }
+        bf
     }
 
     // 1.     Search the page table for the requested page (P).
@@ -42,12 +51,13 @@ impl BufferPoolManager {
     // 2.     If R is dirty, write it back to the disk.
     // 3.     Delete R from the page table and insert P.
     // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
-    fn fetch_page(&mut self, pid: PageId) -> io::Result<&mut Page> {
+    fn fetch_page(&mut self, pid: PageId) -> io::Result<&RwLock<Page>> {
         if self.page_table.contains_key(&pid) {
             let fid = self.get_exist_frame(pid);
             self.replacer.pin(fid);
-            let p = &mut self.buffer_pool[fid];
-            p.pin();
+            let p = &self.buffer_pool[fid];
+            let mut guard = p.write().unwrap();
+            guard.pin();
             return Ok(p)
         }
 
@@ -72,23 +82,24 @@ impl BufferPoolManager {
         }
     }
 
-    fn update_page(&mut self, fid: FrameId, new_pid: PageId, new_page: bool) -> &mut Page {
+    fn update_page(&mut self, fid: FrameId, new_pid: PageId, new_page: bool) -> &RwLock<Page> {
         self.replacer.pin(fid);
 
         let page = &mut self.buffer_pool[fid];
-        if page.is_dirty() {
-            self.disk_manager.write_page(page.get_id(), page.get_data());
-            page.set_dirty(false);
+        let mut page_guard = page.write().unwrap();
+        if page_guard.is_dirty() {
+            self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data());
+            page_guard.set_dirty(false);
         }
 
-        self.page_table.remove(&page.get_id());
+        self.page_table.remove(&page_guard.get_id());
         self.page_table.insert(new_pid, fid);
 
-        page.set_id(new_pid);
-        page.pin();
+        page_guard.set_id(new_pid);
+        page_guard.pin();
 
         if !new_page {
-            self.disk_manager.read_page(new_pid, page.get_data());
+            self.disk_manager.read_page(new_pid, page_guard.get_data());
         }
 
         page
@@ -97,9 +108,10 @@ impl BufferPoolManager {
     fn unpin_page(&mut self, pid: PageId, is_dirty: bool) -> bool {
         match self.page_table.get(&pid) {
             Some(fid) => {
-                let p = &mut self.buffer_pool[*fid];
-                p.unpin();
-                p.set_dirty(is_dirty);
+                let page = &self.buffer_pool[*fid];
+                let mut page_guard = page.write().unwrap();
+                page_guard.unpin();
+                page_guard.set_dirty(is_dirty);
                 self.replacer.unpin(*fid);
                 true
             },
@@ -110,15 +122,16 @@ impl BufferPoolManager {
     fn flush_page(&mut self, pid: PageId) -> bool {
         return match self.page_table.get(&pid) {
             Some(fid) => {
-                let p = &mut self.buffer_pool[*fid];
-                self.disk_manager.write_page(p.get_id(), p.get_data());
+                let page = &self.buffer_pool[*fid];
+                let mut page_guard = page.write().unwrap();
+                self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data());
                 true
             },
             None => {false}
         }
     }
 
-    fn new_page(&mut self) -> io::Result<&mut Page> {
+    fn new_page(&mut self) -> io::Result<&RwLock<Page>> {
         let fid = self.get_available_frame()?;
         let pid = self.disk_manager.allocate_page()?;
         Ok(self.update_page(fid, pid, true))
@@ -128,12 +141,13 @@ impl BufferPoolManager {
         match self.page_table.get(&pid) {
             Some(fid) => {
                 let page = &mut self.buffer_pool[*fid];
-                if page.get_pin_count() != 0 {
+                let mut page_guard = page.write().unwrap();
+                if page_guard.get_pin_count() != 0 {
                     return Err(Error::new(ErrorKind::Other, "Cannot delete page that is in use."))
                 }
 
-                if page.is_dirty() {
-                    self.disk_manager.write_page(page.get_id(), page.get_data());
+                if page_guard.is_dirty() {
+                    self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data());
                 }
                 self.free_list.push(*fid);
                 self.page_table.remove(&pid);
@@ -177,11 +191,15 @@ mod tests {
             Box::new(dm_mock));
 
         // when
-        let page = bpm.fetch_page(fake_id).unwrap();
+        {
+            let page = bpm.fetch_page(fake_id).unwrap().write().unwrap();
+
+            // then
+            assert_eq!(page.get_id(), fake_id);
+            assert_eq!(page.get_pin_count(), 1);
+        }
 
         // then
-        assert_eq!(page.get_id(), fake_id);
-        assert_eq!(page.get_pin_count(), 1);
         assert_eq!(*bpm.page_table.get(&fake_id).unwrap(), fid_to_p1);
         assert!(!bpm.free_list.contains(&fid_to_p1));
     }
@@ -209,7 +227,7 @@ mod tests {
         bpm.fetch_page(fake_id3).unwrap();
 
         // when
-        let page2 = bpm.fetch_page(fake_id2).unwrap();
+        let page2 = bpm.fetch_page(fake_id2).unwrap().write().unwrap();
 
         // then
         assert_eq!(page2.get_id(), fake_id2);
@@ -259,7 +277,7 @@ mod tests {
             let page6 = bpm.fetch_page(fake_id6).unwrap();
 
             // then
-            assert_eq!(page6.get_id(), fake_id6);
+            assert_eq!(page6.write().unwrap().get_id(), fake_id6);
             assert!(!bpm.page_table.contains_key(&fake_id3));
         }
         {
@@ -268,7 +286,7 @@ mod tests {
             let page7 = bpm.fetch_page(fake_id7).unwrap();
 
             // then
-            assert_eq!(page7.get_id(), fake_id7);
+            assert_eq!(page7.write().unwrap().get_id(), fake_id7);
             assert!(!bpm.page_table.contains_key(&fake_id2));
         }
     }
@@ -322,9 +340,9 @@ mod tests {
         // when
         {
             let p1 = bpm.fetch_page(fake_id_1).unwrap();
-            assert_eq!(p1.get_pin_count(), 1);
+            assert_eq!(p1.write().unwrap().get_pin_count(), 1);
             let p2 = bpm.fetch_page(fake_id_2).unwrap();
-            assert_eq!(p2.get_pin_count(), 1);
+            assert_eq!(p2.write().unwrap().get_pin_count(), 1);
         }
 
         bpm.unpin_page(fake_id_1, false);
@@ -336,10 +354,10 @@ mod tests {
         assert!(!bpm.free_list.contains(&fid_to_p1));
         assert!(!bpm.free_list.contains(&fid_to_p2));
 
-        let p1 = &mut bpm.buffer_pool[fid_to_p1];
+        let p1 = (&bpm.buffer_pool[fid_to_p1]).write().unwrap();
         assert_eq!(p1.get_pin_count(), 0);
         assert!(!p1.is_dirty());
-        let p2 = &mut bpm.buffer_pool[fid_to_p2];
+        let p2 = (&bpm.buffer_pool[fid_to_p2]).write().unwrap();
         assert_eq!(p2.get_pin_count(), 0);
         assert!(p2.is_dirty());
     }
@@ -370,11 +388,13 @@ mod tests {
             Box::new(dm_mock));
 
         // when
-        let p1 = bpm.fetch_page(fake_id_1).unwrap();
-        let page_data = p1.get_data();
-        page_data[0] = 1;
-        page_data[1] = 2;
-        page_data[2] = 3;
+        {
+            let mut p1 = bpm.fetch_page(fake_id_1).unwrap().write().unwrap();
+            let page_data = p1.get_data();
+            page_data[0] = 1;
+            page_data[1] = 2;
+            page_data[2] = 3;
+        }
 
         bpm.flush_page(fake_id_1);
     }
@@ -398,8 +418,8 @@ mod tests {
         let p1 = bpm.new_page().unwrap();
 
         // then
-        assert_eq!(p1.get_id(), fake_id_1);
-        assert_eq!(p1.get_pin_count(), 1);
+        assert_eq!(p1.write().unwrap().get_id(), fake_id_1);
+        assert_eq!(p1.write().unwrap().get_pin_count(), 1);
         assert_eq!(*bpm.page_table.get(&fake_id_1).unwrap(), fid_to_p1);
         assert!(!bpm.free_list.contains(&fid_to_p1));
     }
