@@ -1,4 +1,4 @@
-use crate::storage::page::{PageId, PAGE_SIZE};
+use crate::storage::page::page::{PageId, PAGE_SIZE};
 use std::io::{Result, Error, ErrorKind, Seek, Write, SeekFrom, Read};
 #[cfg(test)]
 use mockall::{automock, predicate::*};
@@ -90,7 +90,7 @@ impl FileDiskManager {
             for _i in 0..MAX_FILE_PAGES {
                 new_file.write_all(&empty_data).unwrap()
             }
-            new_file.flush();
+            new_file.flush().unwrap();
         }
 
         FileDiskManager {
@@ -198,9 +198,9 @@ impl DiskManager for FileDiskManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::disk_manager::{DiskManager, FakeDiskManager, FileDiskManager, MAX_FILE_PAGES};
-    use crate::storage::page::*;
-    use std::fs::{File, remove_file};
+    use crate::storage::disk::disk_manager::{DiskManager, FakeDiskManager, FileDiskManager, MAX_FILE_PAGES};
+    use crate::storage::page::page::*;
+    use std::fs::remove_file;
     use std::path::Path;
     use rand::Rng;
     use std::os::macos::fs::MetadataExt;
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn should_create_and_init_file_if_not_exists() {
         let path = TEST_FILE_PATH.to_string() + "1";
-        remove_file(path.as_str());
+        remove_file(path.as_str()).unwrap_or(());
 
         FileDiskManager::new(Path::new(path.as_str()));
 
@@ -262,7 +262,7 @@ mod tests {
         let metadata = file_path.metadata().unwrap();
         assert_eq!(metadata.st_size(), (PAGE_SIZE * MAX_FILE_PAGES) as u64);
 
-        remove_file(path.as_str());
+        remove_file(path.as_str()).unwrap();
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
         let mut expected_page_ids: [usize; 5] = [0; 5];
         for i in 0..expected_page_ids.len() {
             expected_page_ids[i] = rng.gen_range(0..fdm.page_table.len());
-            fdm.deallocate_page(expected_page_ids[i]);
+            fdm.deallocate_page(expected_page_ids[i]).unwrap();
 
             let byte_index = expected_page_ids[i] >> 3;
             let slot = expected_page_ids[i] - (byte_index << 3);
@@ -311,7 +311,7 @@ mod tests {
         }
         assert_eq!(expected_page_ids.sort(), real_allocate_page_ids.sort());
 
-        remove_file(path.as_str());
+        remove_file(path.as_str()).unwrap();
     }
 
     #[test]
@@ -335,9 +335,9 @@ mod tests {
 
         // then
         let mut read_data = [0 as u8; PAGE_SIZE];
-        fdm.read_page(pid, &mut read_data);
+        fdm.read_page(pid, &mut read_data).unwrap();
         assert_eq!(data, read_data);
 
-        remove_file(path.as_str());
+        remove_file(path.as_str()).unwrap();
     }
 }

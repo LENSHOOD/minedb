@@ -1,6 +1,6 @@
 use crate::buffer::replacer::{Replacer, ClockReplacer};
-use crate::storage::disk_manager::*;
-use crate::storage::page::*;
+use crate::storage::disk::disk_manager::*;
+use crate::storage::page::page::*;
 use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
@@ -88,7 +88,7 @@ impl BufferPoolManager {
         let page = &mut self.buffer_pool[fid];
         let mut page_guard = page.write().unwrap();
         if page_guard.is_dirty() {
-            self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data());
+            self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data()).unwrap();
             page_guard.set_dirty(false);
         }
 
@@ -99,7 +99,7 @@ impl BufferPoolManager {
         page_guard.pin();
 
         if !new_page {
-            self.disk_manager.read_page(new_pid, page_guard.get_data_mut());
+            self.disk_manager.read_page(new_pid, page_guard.get_data_mut()).unwrap();
         }
 
         page
@@ -123,8 +123,8 @@ impl BufferPoolManager {
         return match self.page_table.get(&pid) {
             Some(fid) => {
                 let page = &self.buffer_pool[*fid];
-                let mut page_guard = page.write().unwrap();
-                self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data());
+                let page_guard = page.write().unwrap();
+                self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data()).unwrap();
                 true
             },
             None => {false}
@@ -141,13 +141,13 @@ impl BufferPoolManager {
         match self.page_table.get(&pid) {
             Some(fid) => {
                 let page = &mut self.buffer_pool[*fid];
-                let mut page_guard = page.write().unwrap();
+                let page_guard = page.write().unwrap();
                 if page_guard.get_pin_count() != 0 {
                     return Err(Error::new(ErrorKind::Other, "Cannot delete page that is in use."))
                 }
 
                 if page_guard.is_dirty() {
-                    self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data());
+                    self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data()).unwrap();
                 }
                 self.free_list.push(*fid);
                 self.page_table.remove(&pid);
@@ -167,9 +167,9 @@ impl BufferPoolManager {
 #[cfg(test)]
 mod tests {
     use crate::buffer::buffer_pool_manager::{BufferPoolManager, FrameId};
-    use crate::storage::page::PageId;
+    use crate::storage::page::page::PageId;
     use crate::buffer::replacer::ClockReplacer;
-    use crate::storage::disk_manager::*;
+    use crate::storage::disk::disk_manager::*;
     use std::io::*;
 
     const TEST_POOL_SIZE: usize = 5;
