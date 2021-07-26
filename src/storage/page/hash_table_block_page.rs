@@ -9,27 +9,6 @@ struct MappingType<K: KeyType, V: ValueType> {
     value_type: V,
 }
 
-/// The original code was:
-///
-/// ```
-/// #![feature(const_generics)]
-/// #![feature(const_evaluatable_checked)]
-///
-/// const BLOCK_ARRAY_SIZE = 4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1);
-///
-/// pub struct HashTableBlockPage<K: KeyType, V: ValueType> {
-///     occupied: [u8; (4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1) - 1) / 8 + 1],
-///     readable: [u8; (4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1) - 1) / 8 + 1],
-///     array: [MappingType<K, V>; 4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1)],
-/// }
-/// ```
-///
-/// However, due to the feature:
-/// ```
-/// #![feature(const_generics)]
-/// #![feature(const_evaluatable_checked)]
-/// ```
-/// is not stable now, so I choose Vec instead.
 pub struct HashTableBlockPage<K: KeyType, V: ValueType> {
     occupied: Vec<u8>,
     readable: Vec<u8>,
