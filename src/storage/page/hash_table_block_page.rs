@@ -1,21 +1,20 @@
 use crate::storage::page::page::PAGE_SIZE;
+use crate::common::hash::*;
 use std::mem;
+use crate::common::ValueType;
 
-pub trait KeyType {}
-pub trait ValueType {}
-
-struct MappingType<K: KeyType, V: ValueType> {
+struct MappingType<K: HashKeyType, V: ValueType> {
     key_type: K,
     value_type: V,
 }
 
-pub struct HashTableBlockPage<K: KeyType, V: ValueType> {
+pub struct HashTableBlockPage<K: HashKeyType, V: ValueType> {
     occupied: Vec<u8>,
     readable: Vec<u8>,
     array: Vec<MappingType<K, V>>,
 }
 
-impl<K: KeyType, V: ValueType> HashTableBlockPage<K, V> {
+impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
     pub fn new() -> HashTableBlockPage<K, V> {
         let size = 4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1);
         HashTableBlockPage {
@@ -28,12 +27,14 @@ impl<K: KeyType, V: ValueType> HashTableBlockPage<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::page::hash_table_block_page::{KeyType, ValueType, HashTableBlockPage};
+    use crate::storage::page::hash_table_block_page::{HashKeyType, ValueType, HashTableBlockPage};
+    use std::hash::Hash;
 
+    #[derive(Hash)]
     struct FakeKey {
         data: [u8; 10]
     }
-    impl KeyType for FakeKey {}
+    impl HashKeyType for FakeKey {}
 
     struct FakeValue {
         data: [u8; 20]
