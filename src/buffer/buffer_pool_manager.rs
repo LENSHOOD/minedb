@@ -16,7 +16,7 @@ pub struct BufferPoolManager {
 }
 
 impl BufferPoolManager {
-    fn new_default(pool_size: usize) -> BufferPoolManager {
+    pub fn new_default(pool_size: usize) -> BufferPoolManager {
         BufferPoolManager {
             page_table: HashMap::new(),
             free_list: (0..pool_size).collect(),
@@ -51,7 +51,7 @@ impl BufferPoolManager {
     // 2.     If R is dirty, write it back to the disk.
     // 3.     Delete R from the page table and insert P.
     // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
-    fn fetch_page(&mut self, pid: PageId) -> io::Result<&RwLock<Page>> {
+    pub fn fetch_page(&mut self, pid: PageId) -> io::Result<&RwLock<Page>> {
         if self.page_table.contains_key(&pid) {
             let fid = self.get_exist_frame(pid);
             self.replacer.pin(fid);

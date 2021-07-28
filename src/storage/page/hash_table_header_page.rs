@@ -2,24 +2,25 @@ use crate::storage::page::page::{PageId, PAGE_SIZE, INVALID_PAGE_ID};
 use std::{mem, io};
 use std::io::{Error, ErrorKind};
 
-const BLOCK_PAGE_IDS_SIZE: usize = PAGE_SIZE - (mem::size_of::<BasicInfo>() / mem::size_of::<PageId>());
+const BLOCK_PAGE_IDS_SIZE: usize = (PAGE_SIZE - mem::size_of::<BasicInfo>()) / mem::size_of::<PageId>();
 struct BasicInfo {
     page_id: PageId,
     size: usize,
     next_idx: usize,
 }
 
+#[repr(C)]
 pub struct HashTableHeaderPage {
     basic_info: BasicInfo,
     block_page_ids: [PageId; BLOCK_PAGE_IDS_SIZE]
 }
 
 impl HashTableHeaderPage {
-    pub fn new(pid: PageId) -> HashTableHeaderPage {
+    pub fn new(pid: PageId, size: usize) -> HashTableHeaderPage {
         HashTableHeaderPage {
             basic_info: BasicInfo {
                 page_id: pid,
-                size: 0,
+                size,
                 next_idx: 0
             },
             block_page_ids: [INVALID_PAGE_ID; BLOCK_PAGE_IDS_SIZE]
@@ -34,14 +35,17 @@ impl HashTableHeaderPage {
         self.basic_info.size
     }
 
+    pub fn set_size(&mut self, size: usize) {
+        self.basic_info.size = size
+    }
+
     pub fn add(&mut self, pid: PageId) -> io::Result<()> {
-        if self.get_size() == self.block_page_ids.len() {
-            return Err(Error::new(ErrorKind::Other, "Hash table fulled."));
+        if self.block_page_ids.len() == self.basic_info.next_idx + 1 {
+            return Err(Error::new(ErrorKind::Other, "Hash table header fulled."));
         }
 
         self.block_page_ids[self.basic_info.next_idx] = pid;
         self.basic_info.next_idx += 1;
-        self.basic_info.size += 1;
         Ok(())
     }
 }
@@ -55,21 +59,35 @@ mod tests {
     fn should_construct_new_empty_head() {
         // given
         let pid: PageId = 1;
+        let size: usize = 10;
 
         // when
-        let header = HashTableHeaderPage::new(pid);
+        let header = HashTableHeaderPage::new(pid, size);
 
         // then
         assert_eq!(header.get_page_id(), pid);
-        assert_eq!(header.get_size(), 0);
+        assert_eq!(header.get_size(), size);
         assert_eq!(header.basic_info.next_idx, 0);
+        assert_eq!(header.block_page_ids.len(), 509); // (4096 - (64*3)/8) / 64/8
+    }
+
+    #[test]
+    fn should_set_head_size() {
+        // given
+        let mut header = HashTableHeaderPage::new(1, 8);
+
+        // when
+        header.set_size(10);
+
+        // then
+        assert_eq!(header.get_size(), 10);
     }
 
     #[test]
     fn should_add_page_id_to_block_page_ids() {
         // given
         let pid_to_be_add: PageId = 20;
-        let mut header = HashTableHeaderPage::new(0);
+        let mut header = HashTableHeaderPage::new(0, 8);
 
         // when
         let result = header.add(pid_to_be_add);
@@ -77,7 +95,6 @@ mod tests {
         // then
         assert!(result.is_ok());
 
-        assert_eq!(header.basic_info.size, 1);
         let next = header.basic_info.next_idx;
         assert_eq!(next, 1);
         assert_eq!(header.block_page_ids[next-1], pid_to_be_add);
@@ -87,8 +104,8 @@ mod tests {
     fn should_fail_when_block_page_ids_fulled() {
         // given
         let pid_to_be_add: PageId = 20;
-        let mut header = HashTableHeaderPage::new(0);
-        for _ in 0..BLOCK_PAGE_IDS_SIZE {
+        let mut header = HashTableHeaderPage::new(0, 8);
+        for _ in 0..BLOCK_PAGE_IDS_SIZE-1 {
             header.add(0).unwrap();
         }
 
@@ -97,6 +114,6 @@ mod tests {
 
         // then
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Hash table fulled.");
+        assert_eq!(result.unwrap_err().to_string(), "Hash table header fulled.");
     }
 }
