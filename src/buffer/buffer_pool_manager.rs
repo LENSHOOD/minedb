@@ -7,7 +7,7 @@ use std::io::{Error, ErrorKind};
 use std::sync::RwLock;
 
 type FrameId = usize;
-struct BufferPoolManager {
+pub struct BufferPoolManager {
     page_table: HashMap<PageId, FrameId>,
     free_list: Vec<FrameId>,
     buffer_pool: Vec<RwLock<Page>>,
@@ -105,7 +105,7 @@ impl BufferPoolManager {
         page
     }
 
-    fn unpin_page(&mut self, pid: PageId, is_dirty: bool) -> bool {
+    pub fn unpin_page(&mut self, pid: PageId, is_dirty: bool) -> bool {
         match self.page_table.get(&pid) {
             Some(fid) => {
                 let page = &self.buffer_pool[*fid];
@@ -131,7 +131,7 @@ impl BufferPoolManager {
         }
     }
 
-    fn new_page(&mut self) -> io::Result<&RwLock<Page>> {
+    pub fn new_page(&mut self) -> io::Result<&RwLock<Page>> {
         let fid = self.get_available_frame()?;
         let pid = self.disk_manager.allocate_page()?;
         Ok(self.update_page(fid, pid, true))
