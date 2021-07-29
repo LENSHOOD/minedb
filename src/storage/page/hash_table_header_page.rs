@@ -1,15 +1,16 @@
 use crate::storage::page::page::{PageId, PAGE_SIZE, INVALID_PAGE_ID};
 use std::{mem, io};
 use std::io::{Error, ErrorKind};
+use serde::{Serialize, Deserialize};
 
 const BLOCK_PAGE_IDS_SIZE: usize = (PAGE_SIZE - mem::size_of::<BasicInfo>()) / mem::size_of::<PageId>();
+#[derive(Serialize, Deserialize)]
 struct BasicInfo {
     page_id: PageId,
     size: usize,
     next_idx: usize,
 }
 
-#[repr(C)]
 pub struct HashTableHeaderPage {
     basic_info: BasicInfo,
     block_page_ids: [PageId; BLOCK_PAGE_IDS_SIZE]
@@ -47,6 +48,16 @@ impl HashTableHeaderPage {
         self.block_page_ids[self.basic_info.next_idx] = pid;
         self.basic_info.next_idx += 1;
         Ok(())
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut basic_info_part = bincode::serialize(&self.basic_info).unwrap();
+        for pid in self.block_page_ids {
+            let mut pid_raw = bincode::serialize(&pid).unwrap();
+            basic_info_part.append(&mut pid_raw);
+        }
+
+        basic_info_part
     }
 }
 

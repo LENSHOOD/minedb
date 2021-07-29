@@ -10,3 +10,5 @@ edition = "2018"
 mockall = "*"
 rand = "*"
 fasthash = "*"
+serde = { version = "*", features = ["derive"] }
+bincode = "*"
