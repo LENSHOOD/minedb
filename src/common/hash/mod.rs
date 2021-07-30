@@ -16,7 +16,7 @@ mod tests {
     use super::*;
     use fasthash::xx::hash64;
 
-    #[derive(Hash)]
+    #[derive(Hash, Default, Clone)]
     struct TestHashKey {
         i: u8,
     }

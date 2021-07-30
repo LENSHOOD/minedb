@@ -1,4 +1,4 @@
 pub mod hash;
 
-pub trait KeyType {}
-pub trait ValueType {}
+pub trait KeyType: Default + Clone {}
+pub trait ValueType: Default + Clone {}

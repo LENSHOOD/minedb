@@ -3,9 +3,10 @@ use crate::common::hash::*;
 use std::{mem, io};
 use crate::common::ValueType;
 
+#[derive(Clone)]
 struct MappingType<K: HashKeyType, V: ValueType> {
-    key_type: K,
-    value_type: V,
+    key: K,
+    value: V,
 }
 
 pub struct HashTableBlockPage<K: HashKeyType, V: ValueType> {
@@ -20,12 +21,21 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
         HashTableBlockPage {
             occupied: vec![0; ((size - 1) / 8 + 1)],
             readable: vec![0; ((size - 1) / 8 + 1)],
-            array: Vec::with_capacity(size)
+            array: vec![MappingType {key: Default::default(), value: Default::default()}; size]
         }
     }
 
     pub fn get_slot_size() -> usize {
         4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1)
+    }
+
+    pub fn insert(&mut self, slot_idx: usize, key: K, value: V) -> bool {
+        if (&self).occupied(slot_idx) {
+            return false;
+        }
+
+        &self.array.insert(slot_idx, MappingType { key, value});
+        true
     }
 
     fn occupied(&self, slot_idx: usize) -> bool {
@@ -40,12 +50,13 @@ mod tests {
     use crate::storage::page::hash_table_block_page::{HashKeyType, ValueType, HashTableBlockPage};
     use std::hash::Hash;
 
-    #[derive(Hash)]
+    #[derive(Hash, Default, Clone)]
     struct FakeKey {
         data: [u8; 10]
     }
     impl HashKeyType for FakeKey {}
 
+    #[derive(Default, Clone)]
     struct FakeValue {
         data: [u8; 20]
     }
@@ -74,5 +85,38 @@ mod tests {
         assert!(is_occupied_83);
         assert!(is_occupied_85);
         assert!(!not_occupied_86);
+    }
+
+    #[test]
+    fn should_insert_into_block() {
+        // given
+        let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
+        block.occupied[10] = 0b0010_1000;
+        let key = FakeKey { data: [1; 10] };
+        let value = FakeValue { data: [127; 20] };
+
+        // when
+        let inserted = block.insert(86, key, value);
+
+        // then
+        assert!(inserted);
+        let mapping = &block.array[86];
+        assert_eq!(mapping.key.data[0], 1);
+        assert_eq!(mapping.value.data[0], 127);
+    }
+
+    #[test]
+    fn should_not_insert_when_slot_already_occupied() {
+        // given
+        let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
+        block.occupied[10] = 0b0010_1000;
+        let key = FakeKey { data: [1; 10] };
+        let value = FakeValue { data: [127; 20] };
+
+        // when
+        let inserted = block.insert(83, key, value);
+
+        // then
+        assert!(!inserted);
     }
 }
