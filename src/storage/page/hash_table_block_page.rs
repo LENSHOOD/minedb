@@ -34,14 +34,27 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
             return false;
         }
 
-        &self.array.insert(slot_idx, MappingType { key, value});
+        self.array.insert(slot_idx, MappingType { key, value});
+        self.set(slot_idx);
         true
     }
 
     fn occupied(&self, slot_idx: usize) -> bool {
         let byte_idx = slot_idx / 8;
         let bit_idx = slot_idx % 8;
-        &self.occupied[byte_idx] | (!(0x01 << bit_idx)) == 0xff
+        self.occupied[byte_idx] | (!(0x01 << bit_idx)) == 0xff
+    }
+
+    fn set(&mut self, slot_idx: usize) {
+        let byte_idx = slot_idx / 8;
+        let bit_idx = slot_idx % 8;
+        self.occupied[byte_idx] = 0x01 << bit_idx
+    }
+
+    fn clear(&mut self, slot_idx: usize) {
+        let byte_idx = slot_idx / 8;
+        let bit_idx = slot_idx % 8;
+        self.occupied[byte_idx] &= (!(0x01 << bit_idx))
     }
 }
 
@@ -88,6 +101,34 @@ mod tests {
     }
 
     #[test]
+    fn should_set() {
+        // given
+        let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
+        block.occupied[10] = 0b0010_1000;
+
+        // when
+        assert!(!block.occupied(86));
+        block.set(86);
+
+        // then
+        assert!(block.occupied(86));
+    }
+
+    #[test]
+    fn should_clear() {
+        // given
+        let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
+        block.occupied[10] = 0b0010_1000;
+
+        // when
+        assert!(block.occupied(83));
+        block.clear(83);
+
+        // then
+        assert!(!block.occupied(83));
+    }
+
+    #[test]
     fn should_insert_into_block() {
         // given
         let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
@@ -100,6 +141,7 @@ mod tests {
 
         // then
         assert!(inserted);
+        assert!(block.occupied(86));
         let mapping = &block.array[86];
         assert_eq!(mapping.key.data[0], 1);
         assert_eq!(mapping.value.data[0], 127);
@@ -118,5 +160,6 @@ mod tests {
 
         // then
         assert!(!inserted);
+        assert!(!block.occupied(86));
     }
 }
