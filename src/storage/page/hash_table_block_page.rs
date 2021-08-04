@@ -1,9 +1,10 @@
-use crate::storage::page::page::PAGE_SIZE;
+use crate::storage::page::page::{PAGE_SIZE, Page};
 use crate::common::hash::*;
 use std::{mem, io};
 use crate::common::ValueType;
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MappingType<K: HashKeyType, V: ValueType> {
     key: K,
     value: V,
@@ -29,6 +30,17 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
         4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1)
     }
 
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut res = self.occupied.clone();
+        res.append(&mut (self.readable.clone()));
+        for mappingType in self.array.iter() {
+            let mut raw = bincode::serialize(mappingType).unwrap();
+            res.append(&mut raw);
+        }
+
+        res
+    }
+
     pub fn insert(&mut self, slot_idx: usize, key: K, value: V) -> bool {
         if (&self).occupied(slot_idx) {
             return false;
@@ -48,7 +60,7 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
     fn set(&mut self, slot_idx: usize) {
         let byte_idx = slot_idx / 8;
         let bit_idx = slot_idx % 8;
-        self.occupied[byte_idx] = 0x01 << bit_idx
+        self.occupied[byte_idx] |= 0x01 << bit_idx
     }
 
     fn clear(&mut self, slot_idx: usize) {
@@ -62,14 +74,15 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
 mod tests {
     use crate::storage::page::hash_table_block_page::{HashKeyType, ValueType, HashTableBlockPage};
     use std::hash::Hash;
+    use serde::Serialize;
 
-    #[derive(Hash, Default, Clone)]
+    #[derive(Hash, Default, Clone, Serialize)]
     struct FakeKey {
         data: [u8; 10]
     }
     impl HashKeyType for FakeKey {}
 
-    #[derive(Default, Clone)]
+    #[derive(Default, Clone, Serialize)]
     struct FakeValue {
         data: [u8; 20]
     }
@@ -111,7 +124,7 @@ mod tests {
         block.set(86);
 
         // then
-        assert!(block.occupied(86));
+        assert_eq!(block.occupied[10], 0b0110_1000);;
     }
 
     #[test]
@@ -125,7 +138,7 @@ mod tests {
         block.clear(83);
 
         // then
-        assert!(!block.occupied(83));
+        assert_eq!(block.occupied[10], 0b0010_0000);;
     }
 
     #[test]
@@ -161,5 +174,27 @@ mod tests {
         // then
         assert!(!inserted);
         assert!(!block.occupied(86));
+    }
+
+    #[test]
+    fn should_serialize_block() {
+        // given
+        let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
+        block.occupied[10] = 0b0010_1000;
+        let key = FakeKey { data: [1; 10] };
+        let value = FakeValue { data: [127; 20] };
+        block.insert(86, key, value);
+
+        // when
+        let raw = block.serialize();
+
+        // then
+        // array size == 135, occupied,readable size == 17
+        assert_eq!(raw[10], 0b0110_1000);
+        // array index == 86 -> real index == 17*2 + 86*30 = 2614 (MappingType first idx)
+        assert_eq!(raw[2613], 0);
+        assert_eq!(raw[2614], 1);
+        assert_eq!(raw[2623], 1);
+        assert_eq!(raw[2624], 127);
     }
 }

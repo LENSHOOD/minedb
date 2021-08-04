@@ -15,8 +15,9 @@ pub fn hash<K: HashKeyType>(key: &K) -> u64 {
 mod tests {
     use super::*;
     use fasthash::xx::hash64;
+    use serde::Serialize;
 
-    #[derive(Hash, Default, Clone)]
+    #[derive(Hash, Default, Clone, Serialize)]
     struct TestHashKey {
         i: u8,
     }
