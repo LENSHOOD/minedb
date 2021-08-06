@@ -16,9 +16,9 @@ pub struct HashTableBlockPage<K: HashKeyType, V: ValueType> {
     array: Vec<MappingType<K, V>>,
 }
 
-impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
+impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashTableBlockPage<K, V> {
     pub fn new() -> HashTableBlockPage<K, V> {
-        let size = HashTableBlockPage::<K, V>::get_slot_size();
+        let size = HashTableBlockPage::<K, V>::get_block_array_size();
         HashTableBlockPage {
             occupied: vec![0; ((size - 1) / 8 + 1)],
             readable: vec![0; ((size - 1) / 8 + 1)],
@@ -26,10 +26,12 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
         }
     }
 
-    pub fn get_slot_size() -> usize {
+    /// Size of MappingTypes in one page: size_of(MappingType) + 0.25, 0.25 = 2/8 byte = occupied bit + readable bit
+    pub fn get_block_array_size() -> usize {
         4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1)
     }
 
+    /// We won't directly use bincode::serialize() due to we don't want Vector's length info go into disk page
     pub fn serialize(&self) -> Vec<u8> {
         let mut res = self.occupied.clone();
         res.append(&mut (self.readable.clone()));
@@ -41,11 +43,28 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
         res
     }
 
+    pub fn deserialize(page_data: &'d [u8]) -> io::Result<HashTableBlockPage<K, V>> {
+        let size = HashTableBlockPage::<K, V>::get_block_array_size();
+        let array_bit_size = (size - 1) / 8 + 1;
+        let mut array = vec![MappingType {key: Default::default(), value: Default::default()}; size];
+        let mapping_type_size = mem::size_of::<MappingType<K, V>>();
+        for i in (2*array_bit_size..(page_data.len() - mapping_type_size)).step_by(mapping_type_size) {
+            array[(i-array_bit_size)/mapping_type_size] = bincode::deserialize::<MappingType<K, V>>(&page_data[i..i+mapping_type_size]).unwrap();
+        }
+
+        Ok(HashTableBlockPage {
+            occupied: Vec::from(&page_data[0..array_bit_size]),
+            readable: Vec::from(&page_data[((size - 1) / 8 + 1)..2*array_bit_size]),
+            array
+        })
+    }
+
     pub fn insert(&mut self, slot_idx: usize, key: K, value: V) -> bool {
         if (&self).occupied(slot_idx) {
             return false;
         }
 
+        self.array.remove(slot_idx);
         self.array.insert(slot_idx, MappingType { key, value});
         self.set(slot_idx);
         true
@@ -74,15 +93,15 @@ impl<K: HashKeyType, V: ValueType> HashTableBlockPage<K, V> {
 mod tests {
     use crate::storage::page::hash_table_block_page::{HashKeyType, ValueType, HashTableBlockPage};
     use std::hash::Hash;
-    use serde::Serialize;
+    use serde::{Serialize, Deserialize};
 
-    #[derive(Hash, Default, Clone, Serialize)]
+    #[derive(Hash, Default, Clone, Serialize, Deserialize)]
     struct FakeKey {
         data: [u8; 10]
     }
     impl HashKeyType for FakeKey {}
 
-    #[derive(Default, Clone, Serialize)]
+    #[derive(Default, Clone, Serialize, Deserialize)]
     struct FakeValue {
         data: [u8; 20]
     }
@@ -196,5 +215,24 @@ mod tests {
         assert_eq!(raw[2614], 1);
         assert_eq!(raw[2623], 1);
         assert_eq!(raw[2624], 127);
+    }
+
+    #[test]
+    fn should_deserialize_block() {
+        // given
+        let mut block: HashTableBlockPage<FakeKey, FakeValue> = HashTableBlockPage::new();
+        block.occupied[10] = 0b0010_1000;
+        let key = FakeKey { data: [1; 10] };
+        let value = FakeValue { data: [127; 20] };
+        block.insert(86, key, value);
+        let raw = block.serialize();
+
+        // when
+        let deser_block: HashTableBlockPage<FakeKey, FakeValue> =
+            HashTableBlockPage::deserialize(raw.as_slice()).unwrap();
+
+        // then
+        assert_eq!(deser_block.occupied[10], 0b0110_1000);
+        assert_eq!(deser_block.array[86].key.data, [1; 10]);
     }
 }
