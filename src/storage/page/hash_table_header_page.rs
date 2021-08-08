@@ -50,6 +50,19 @@ impl HashTableHeaderPage {
         Ok(())
     }
 
+    pub fn set(&mut self, pid: PageId, slot_id: usize) {
+        self.block_page_ids[slot_id] = pid;
+    }
+
+    pub fn get_block_page_id(&self, slot_idx: usize) -> Option<PageId> {
+        let block_pid = self.block_page_ids[slot_idx];
+        if block_pid == INVALID_PAGE_ID {
+            return None;
+        }
+
+        Some(block_pid)
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let mut basic_info_part = bincode::serialize(&self.basic_info).unwrap();
         for pid in self.block_page_ids {

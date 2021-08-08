@@ -76,6 +76,11 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
         true
     }
 
+    pub fn get(&self, slot_idx: usize) -> (&K, &V) {
+        let mapping_type = &self.array[slot_idx];
+        (&mapping_type.key, &mapping_type.value)
+    }
+
     fn occupied(&self, slot_idx: usize) -> bool {
         let byte_idx = slot_idx / 8;
         let bit_idx = slot_idx % 8;
