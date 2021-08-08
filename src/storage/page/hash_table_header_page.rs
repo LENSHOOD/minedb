@@ -1,4 +1,4 @@
-use crate::storage::page::page::{PageId, PAGE_SIZE, INVALID_PAGE_ID, Page};
+use crate::storage::page::page::{PageId, PAGE_SIZE, INVALID_PAGE_ID};
 use std::{mem, io};
 use std::io::{Error, ErrorKind};
 use serde::{Serialize, Deserialize};
@@ -70,8 +70,8 @@ impl HashTableHeaderPage {
 
         let page_id_size = mem::size_of::<PageId>();
         let mut block_page_ids = [INVALID_PAGE_ID; BLOCK_PAGE_IDS_SIZE];
-        for i in (basic_info_size..page_data.len()).step_by(page_id_size) {
-            block_page_ids[i/page_id_size] = bincode::deserialize::<PageId>(&page_data[i..i+page_id_size]).unwrap();
+        for i in (basic_info_size..(page_data.len() - page_id_size)).step_by(page_id_size) {
+            block_page_ids[(i - basic_info_size) / page_id_size] = bincode::deserialize::<PageId>(&page_data[i..i+page_id_size]).unwrap();
         }
 
         Ok(HashTableHeaderPage {
@@ -152,6 +152,7 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "Hash table header fulled.");
     }
 
+    #[test]
     fn should_serialize_and_deserialize_header() {
         // given
         let pid: PageId = 3;

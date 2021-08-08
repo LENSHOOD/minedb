@@ -1,4 +1,4 @@
-use crate::storage::page::page::{PAGE_SIZE, Page};
+use crate::storage::page::page::PAGE_SIZE;
 use crate::common::hash::*;
 use std::{mem, io};
 use crate::common::ValueType;
@@ -18,16 +18,16 @@ pub struct HashTableBlockPage<K: HashKeyType, V: ValueType> {
 
 impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashTableBlockPage<K, V> {
     pub fn new() -> HashTableBlockPage<K, V> {
-        let size = HashTableBlockPage::<K, V>::get_block_array_size();
+        let capacity = HashTableBlockPage::<K, V>::capacity_of_block();
         HashTableBlockPage {
-            occupied: vec![0; ((size - 1) / 8 + 1)],
-            readable: vec![0; ((size - 1) / 8 + 1)],
-            array: vec![MappingType {key: Default::default(), value: Default::default()}; size]
+            occupied: vec![0; (capacity - 1) / 8 + 1],
+            readable: vec![0; (capacity - 1) / 8 + 1],
+            array: vec![MappingType {key: Default::default(), value: Default::default()}; capacity]
         }
     }
 
     /// Size of MappingTypes in one page: size_of(MappingType) + 0.25, 0.25 = 2/8 byte = occupied bit + readable bit
-    pub fn get_block_array_size() -> usize {
+    pub fn capacity_of_block() -> usize {
         4 * PAGE_SIZE / (4 * mem::size_of::<MappingType<K, V>>() + 1)
     }
 
@@ -35,8 +35,8 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
     pub fn serialize(&self) -> Vec<u8> {
         let mut res = self.occupied.clone();
         res.append(&mut (self.readable.clone()));
-        for mappingType in self.array.iter() {
-            let mut raw = bincode::serialize(mappingType).unwrap();
+        for mapping_type in self.array.iter() {
+            let mut raw = bincode::serialize(mapping_type).unwrap();
             res.append(&mut raw);
         }
 
@@ -44,17 +44,24 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
     }
 
     pub fn deserialize(page_data: &'d [u8]) -> io::Result<HashTableBlockPage<K, V>> {
-        let size = HashTableBlockPage::<K, V>::get_block_array_size();
-        let array_bit_size = (size - 1) / 8 + 1;
-        let mut array = vec![MappingType {key: Default::default(), value: Default::default()}; size];
+        let capacity = HashTableBlockPage::<K, V>::capacity_of_block();
+        let array_bit_size = (capacity - 1) / 8 + 1;
+        let mut array = vec![MappingType {key: Default::default(), value: Default::default()}; capacity];
+
         let mapping_type_size = mem::size_of::<MappingType<K, V>>();
-        for i in (2*array_bit_size..(page_data.len() - mapping_type_size)).step_by(mapping_type_size) {
-            array[(i-array_bit_size)/mapping_type_size] = bincode::deserialize::<MappingType<K, V>>(&page_data[i..i+mapping_type_size]).unwrap();
+
+        // [(page_data.len() / mapping_type_size - 1) * mapping_type_size]:
+        // cal the largest mapping type numbers the page_data can hold, minus one
+        // to avoid out of bound, then multiple of mapping_type_size to get range of bytes
+        let data_range = 2 * array_bit_size..(page_data.len() / mapping_type_size - 1) * mapping_type_size;
+        for i in data_range.step_by(mapping_type_size) {
+            let curr_mapping_type_index = (i - 2 * array_bit_size) / mapping_type_size;
+            array[curr_mapping_type_index] = bincode::deserialize::<MappingType<K, V>>(&page_data[i..i+mapping_type_size]).unwrap();
         }
 
         Ok(HashTableBlockPage {
             occupied: Vec::from(&page_data[0..array_bit_size]),
-            readable: Vec::from(&page_data[((size - 1) / 8 + 1)..2*array_bit_size]),
+            readable: Vec::from(&page_data[((capacity - 1) / 8 + 1)..2*array_bit_size]),
             array
         })
     }
@@ -64,8 +71,7 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
             return false;
         }
 
-        self.array.remove(slot_idx);
-        self.array.insert(slot_idx, MappingType { key, value});
+        self.array[slot_idx] = MappingType { key, value};
         self.set(slot_idx);
         true
     }
@@ -85,7 +91,7 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
     fn clear(&mut self, slot_idx: usize) {
         let byte_idx = slot_idx / 8;
         let bit_idx = slot_idx % 8;
-        self.occupied[byte_idx] &= (!(0x01 << bit_idx))
+        self.occupied[byte_idx] &= !(0x01 << bit_idx)
     }
 }
 
@@ -143,7 +149,7 @@ mod tests {
         block.set(86);
 
         // then
-        assert_eq!(block.occupied[10], 0b0110_1000);;
+        assert_eq!(block.occupied[10], 0b0110_1000);
     }
 
     #[test]
@@ -157,7 +163,7 @@ mod tests {
         block.clear(83);
 
         // then
-        assert_eq!(block.occupied[10], 0b0010_0000);;
+        assert_eq!(block.occupied[10], 0b0010_0000);
     }
 
     #[test]
