@@ -39,6 +39,38 @@ impl<'a> LinearProbeHashTable<'a> {
 
         HashTableHeaderPage::deserialize(header_page.get_data()).unwrap()
     }
+
+    fn insert_into_new_page(&mut self, block_data: Vec<u8>) -> PageId {
+        let mut block_pid = INVALID_PAGE_ID;
+        {
+            let mut block_page = self.buffer_pool_manager.new_page().unwrap().write().unwrap();
+            let page_data = block_page.get_data_mut();
+            for i in 0..block_data.len() {
+                page_data[i] = block_data[i];
+            }
+            block_pid = block_page.get_id();
+        }
+
+        {
+            self.buffer_pool_manager.unpin_page(block_pid, true);
+        }
+
+        block_pid
+    }
+
+    fn update_header(&mut self, header_data: Vec<u8>) {
+        {
+            let mut header_page = self.buffer_pool_manager.fetch_page(self.header_pid).unwrap().write().unwrap();
+            let page_data = header_page.get_data_mut();
+            for i in 0..header_data.len() {
+                page_data[i] = header_data[i];
+            }
+        }
+
+        {
+            self.buffer_pool_manager.unpin_page(self.header_pid, true);
+        }
+    }
 }
 
 impl<'a, K: HashKeyType + Deserialize<'a>, V: ValueType + Deserialize<'a>> HashTable<K, V> for LinearProbeHashTable<'a> {
@@ -65,39 +97,10 @@ impl<'a, K: HashKeyType + Deserialize<'a>, V: ValueType + Deserialize<'a>> HashT
                     // deal with collapse
                 }
 
-                {
-                    let mut block_pid = INVALID_PAGE_ID;
-                    {
-                        let mut block_page = self.buffer_pool_manager.new_page().unwrap().write().unwrap();
-                        let page_data = block_page.get_data_mut();
-                        let block_data = new_block.serialize();
-                        for i in 0..block_data.len() {
-                            page_data[i] = block_data[i];
-                        }
-                        block_pid = block_page.get_id();
-                    }
+                let block_pid = self.insert_into_new_page(new_block.serialize());
+                header.set(block_pid, block_idx);
 
-                    {
-                        self.buffer_pool_manager.unpin_page(block_pid, true);
-                    }
-
-                    header.set(block_pid, block_idx);
-                }
-
-                {
-                    {
-                        let mut header_page = self.buffer_pool_manager.fetch_page(self.header_pid).unwrap().write().unwrap();
-                        let page_data = header_page.get_data_mut();
-                        let header_data = header.serialize();
-                        for i in 0..header_data.len() {
-                            page_data[i] = header_data[i];
-                        }
-                    }
-
-                    {
-                        self.buffer_pool_manager.unpin_page(self.header_pid, true);
-                    }
-                }
+                self.update_header(header.serialize())
             }
         }
     }
@@ -110,6 +113,7 @@ impl<'a, K: HashKeyType + Deserialize<'a>, V: ValueType + Deserialize<'a>> HashT
         todo!()
     }
 }
+
 
 #[cfg(test)]
 mod tests {
