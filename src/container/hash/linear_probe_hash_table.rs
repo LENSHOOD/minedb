@@ -2,18 +2,20 @@ use crate::common::hash::{HashKeyType, hash};
 use crate::common::{ValueType, KeyType};
 use crate::storage::page::hash_table_header_page::HashTableHeaderPage;
 use crate::buffer::buffer_pool_manager::BufferPoolManager;
-use crate::storage::page::page::{PageId, INVALID_PAGE_ID};
+use crate::storage::page::page::{PageId, INVALID_PAGE_ID, Page};
 use crate::container::hash::hash_table::HashTable;
 use crate::storage::page::hash_table_block_page::HashTableBlockPage;
 use serde::Deserialize;
+use std::sync::RwLock;
 
-pub struct LinearProbeHashTable<'a> {
+pub struct LinearProbeHashTable<'a, K: HashKeyType> {
     header_pid: PageId,
     buffer_pool_manager: &'a mut BufferPoolManager,
+    hash_fn: fn(&K) -> u64,
 }
 
-impl<'a> LinearProbeHashTable<'a> {
-    pub fn new(num_buckets: usize, bpm: &mut BufferPoolManager) -> LinearProbeHashTable {
+impl<'a, K:HashKeyType> LinearProbeHashTable<'a, K> {
+    pub fn new(num_buckets: usize, bpm: &mut BufferPoolManager, hash_fn: fn(&K) -> u64) -> LinearProbeHashTable<K> {
         let mut header_pid = INVALID_PAGE_ID;
         {
             let mut header_page = bpm.new_page().unwrap().write().unwrap();
@@ -28,7 +30,8 @@ impl<'a> LinearProbeHashTable<'a> {
 
         LinearProbeHashTable {
             header_pid,
-            buffer_pool_manager: bpm
+            buffer_pool_manager: bpm,
+            hash_fn
         }
     }
 
@@ -73,7 +76,10 @@ impl<'a> LinearProbeHashTable<'a> {
     }
 }
 
-impl<'a, K: HashKeyType + Deserialize<'a>, V: ValueType + Deserialize<'a>> HashTable<K, V> for LinearProbeHashTable<'a> {
+impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K> where
+    K: HashKeyType + Deserialize<'a>,
+    V: ValueType + Deserialize<'a>,
+{
     /// linear hash table insert:
     /// 1. slot_index = hash(key) % size
     /// 2. if slot not occupied, insert, done.
@@ -84,18 +90,16 @@ impl<'a, K: HashKeyType + Deserialize<'a>, V: ValueType + Deserialize<'a>> HashT
         let mut header = self.get_header();
 
         let slot_capacity = HashTableBlockPage::<K, V>::capacity_of_block();
-        let slot_idx = (hash(k) % (header.get_size() * slot_capacity) as u64) as usize;
+        let slot_idx = ((self.hash_fn)(k) % (header.get_size() * slot_capacity) as u64) as usize;
         let block_idx = slot_idx / slot_capacity;
 
         match header.get_block_page_id(block_idx) {
             Some(_pid) => { },
             None => {
                 let mut new_block = HashTableBlockPage::<K, V>::new();
-                let inserted = new_block.insert(slot_idx - block_idx * slot_capacity, k.clone(), v.clone());
 
-                if !inserted {
-                    // deal with collapse
-                }
+                // collapse cannot happen in new block
+                assert!(new_block.insert(slot_idx - block_idx * slot_capacity, k.clone(), v.clone()));
 
                 let block_pid = self.insert_into_new_page(new_block.serialize());
                 header.set(block_pid, block_idx);
@@ -122,6 +126,10 @@ mod tests {
     use crate::storage::page::hash_table_block_page::HashTableBlockPage;
     use serde::{Serialize, Deserialize};
 
+    pub fn fake_hash<K: HashKeyType>(key: &K) -> u64 {
+        1
+    }
+
     #[derive(Hash, Default, Clone, Serialize, Deserialize)]
     struct FakeKey {
         data: [u8; 10]
@@ -143,7 +151,7 @@ mod tests {
         // when
         let mut header_pid = INVALID_PAGE_ID;
         {
-            let lpht = LinearProbeHashTable::new(size, &mut bpm);
+            let lpht = LinearProbeHashTable::<FakeKey>::new(size, &mut bpm, fake_hash);
             header_pid = lpht.header_pid;
         }
 
@@ -163,7 +171,7 @@ mod tests {
         // given
         let bucket_size = 16;
         let mut bpm = BufferPoolManager::new_default(100);
-        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, hash);
         let mut key = FakeKey { data: [0; 10]};
         key.data[0] = 1;
         let mut val = FakeValue {data: [0; 20]};
