@@ -3,6 +3,7 @@ use crate::common::hash::*;
 use std::{mem, io};
 use crate::common::ValueType;
 use serde::{Serialize, Deserialize};
+use serde::de::DeserializeOwned;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct MappingType<K: HashKeyType, V: ValueType> {
@@ -16,7 +17,7 @@ pub struct HashTableBlockPage<K: HashKeyType, V: ValueType> {
     array: Vec<MappingType<K, V>>,
 }
 
-impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashTableBlockPage<K, V> {
+impl<K: HashKeyType + DeserializeOwned, V: ValueType + DeserializeOwned> HashTableBlockPage<K, V> {
     pub fn new() -> HashTableBlockPage<K, V> {
         let capacity = HashTableBlockPage::<K, V>::capacity_of_block();
         HashTableBlockPage {
@@ -43,7 +44,7 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
         res
     }
 
-    pub fn deserialize(page_data: &'d [u8]) -> io::Result<HashTableBlockPage<K, V>> {
+    pub fn deserialize(page_data: &[u8]) -> io::Result<HashTableBlockPage<K, V>> {
         let capacity = HashTableBlockPage::<K, V>::capacity_of_block();
         let array_bit_size = (capacity - 1) / 8 + 1;
         let mut array = vec![MappingType {key: Default::default(), value: Default::default()}; capacity];
@@ -56,7 +57,7 @@ impl<'d, K: HashKeyType + Deserialize<'d>, V: ValueType + Deserialize<'d>> HashT
         let data_range = 2 * array_bit_size..(page_data.len() / mapping_type_size - 1) * mapping_type_size;
         for i in data_range.step_by(mapping_type_size) {
             let curr_mapping_type_index = (i - 2 * array_bit_size) / mapping_type_size;
-            array[curr_mapping_type_index] = bincode::deserialize::<MappingType<K, V>>(&page_data[i..i+mapping_type_size]).unwrap();
+            array[curr_mapping_type_index] = bincode::deserialize::<MappingType<K, V>>(&(page_data[i..i + mapping_type_size])).unwrap();
         }
 
         Ok(HashTableBlockPage {

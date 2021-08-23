@@ -7,6 +7,7 @@ use crate::container::hash::hash_table::HashTable;
 use crate::storage::page::hash_table_block_page::HashTableBlockPage;
 use serde::Deserialize;
 use std::sync::RwLock;
+use serde::de::DeserializeOwned;
 
 pub struct LinearProbeHashTable<'a, K: HashKeyType> {
     header_pid: PageId,
@@ -14,7 +15,7 @@ pub struct LinearProbeHashTable<'a, K: HashKeyType> {
     hash_fn: fn(&K) -> u64,
 }
 
-impl<'a, K:HashKeyType> LinearProbeHashTable<'a, K> {
+impl<'a, K:HashKeyType + DeserializeOwned> LinearProbeHashTable<'a, K> {
     pub fn new(num_buckets: usize, bpm: &mut BufferPoolManager, hash_fn: fn(&K) -> u64) -> LinearProbeHashTable<K> {
         let mut header_pid = INVALID_PAGE_ID;
         {
@@ -61,12 +62,12 @@ impl<'a, K:HashKeyType> LinearProbeHashTable<'a, K> {
         block_pid
     }
 
-    fn update_header(&mut self, header_data: Vec<u8>) {
+    fn update_page(&mut self, pid: PageId, page_data: Vec<u8>) {
         {
-            let mut header_page = self.buffer_pool_manager.fetch_page(self.header_pid).unwrap().write().unwrap();
-            let page_data = header_page.get_data_mut();
-            for i in 0..header_data.len() {
-                page_data[i] = header_data[i];
+            let mut page = self.buffer_pool_manager.fetch_page(pid).unwrap().write().unwrap();
+            let raw_data = page.get_data_mut();
+            for i in 0..page_data.len() {
+                raw_data[i] = page_data[i];
             }
         }
 
@@ -77,8 +78,8 @@ impl<'a, K:HashKeyType> LinearProbeHashTable<'a, K> {
 }
 
 impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K> where
-    K: HashKeyType + Deserialize<'a>,
-    V: ValueType + Deserialize<'a>,
+    K: HashKeyType + DeserializeOwned,
+    V: ValueType + DeserializeOwned,
 {
     /// linear hash table insert:
     /// 1. slot_index = hash(key) % size
@@ -94,7 +95,26 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K> where
         let block_idx = slot_idx / slot_capacity;
 
         match header.get_block_page_id(block_idx) {
-            Some(_pid) => { },
+            Some(block_pid) => {
+                {
+                    let mut block = HashTableBlockPage::new();
+                    {
+                        let block_page = self.buffer_pool_manager
+                            .fetch_page(block_pid).unwrap()
+                            .read().unwrap();
+                        block = HashTableBlockPage::deserialize(block_page.get_data()).unwrap();
+                        let inserted = block.insert(slot_idx - block_idx * slot_capacity, k.clone(), v.clone());
+
+                        if !inserted {
+                            // deal with collapse
+                        }
+                    }
+
+                    {
+                        self.update_page(block_pid, block.serialize())
+                    }
+                }
+            },
             None => {
                 let mut new_block = HashTableBlockPage::<K, V>::new();
 
@@ -104,7 +124,7 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K> where
                 let block_pid = self.insert_into_new_page(new_block.serialize());
                 header.set(block_pid, block_idx);
 
-                self.update_header(header.serialize())
+                self.update_page(self.header_pid, header.serialize())
             }
         }
     }
@@ -125,10 +145,6 @@ mod tests {
     use crate::common::hash::hash;
     use crate::storage::page::hash_table_block_page::HashTableBlockPage;
     use serde::{Serialize, Deserialize};
-
-    pub fn fake_hash<K: HashKeyType>(key: &K) -> u64 {
-        1
-    }
 
     #[derive(Hash, Default, Clone, Serialize, Deserialize)]
     struct FakeKey {
@@ -151,7 +167,7 @@ mod tests {
         // when
         let mut header_pid = INVALID_PAGE_ID;
         {
-            let lpht = LinearProbeHashTable::<FakeKey>::new(size, &mut bpm, fake_hash);
+            let lpht = LinearProbeHashTable::<FakeKey>::new(size, &mut bpm, hash);
             header_pid = lpht.header_pid;
         }
 
@@ -184,7 +200,7 @@ mod tests {
         // calculate slot index and bucket index
         let slot_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
         let slot_index = (hash(&key) % (bucket_size * slot_capacity) as u64) as usize;
-        let block_index = (hash(&key) % (bucket_size * slot_capacity) as u64) as usize / slot_capacity;
+        let block_index = slot_index / slot_capacity;
 
         // get bucket page id
         let first_block_page_id = 1;
@@ -196,6 +212,46 @@ mod tests {
         let block = HashTableBlockPage::<FakeKey, FakeValue>::deserialize(block_raw.get_data()).unwrap();
         let (k, v) = block.get(slot_index - block_index * slot_capacity);
         assert_eq!(k.data[0], 1);
+        assert_eq!(v.data[0], 127);
+    }
+
+    #[test]
+    fn should_insert_one_kv_to_hashtable_with_same_block() {
+        // given
+        let fake_hash = |key: &FakeKey| { key.data[0] as u64 };
+
+        let bucket_size = 16;
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, fake_hash);
+
+        let mut key1 = FakeKey { data: [0; 10]};
+        key1.data[0] = 1;
+        let mut val = FakeValue {data: [0; 20]};
+        val.data[0] = 127;
+        table.insert(&key1, &val);
+
+        let mut key2 = FakeKey { data: [0; 10]};
+        key2.data[0] = 2;
+
+        // when
+        table.insert(&key2, &val);
+
+        // then
+        // calculate slot index and bucket index
+        let slot_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let slot_index = (fake_hash(&key2) % (bucket_size * slot_capacity) as u64) as usize;
+        let block_index = slot_index / slot_capacity;
+
+        // get bucket page id
+        let first_block_page_id = 1;
+        let header = table.get_header();
+        assert_eq!(header.get_block_page_id(block_index).unwrap(), first_block_page_id);
+
+        // get value from bucket
+        let block_raw = bpm.fetch_page(first_block_page_id).unwrap().read().unwrap();
+        let block = HashTableBlockPage::<FakeKey, FakeValue>::deserialize(block_raw.get_data()).unwrap();
+        let (k, v) = block.get(slot_index - block_index * slot_capacity);
+        assert_eq!(k.data[0], 2);
         assert_eq!(v.data[0], 127);
     }
 }
