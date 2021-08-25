@@ -12,6 +12,7 @@ use crate::storage::page::hash_table_block_page::HashTableBlockPage;
 use crate::storage::page::hash_table_header_page::HashTableHeaderPage;
 use crate::storage::page::page::{INVALID_PAGE_ID, Page, PageId};
 use std::marker::PhantomData;
+use std::borrow::BorrowMut;
 
 pub struct LinearProbeHashTable<'a, K: HashKeyType, V: ValueType> {
     header_pid: PageId,
@@ -142,7 +143,7 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
 
         let mut need_cross_block = false;
         match header.get_block_page_id(block_idx) {
-            Some(block_pid) => {
+            Some(mut block_pid) => {
                 {
                     let mut block = HashTableBlockPage::new();
                     {
@@ -164,6 +165,34 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
                             // found a empty slot
                             if !need_cross_block {
                                 assert!(block.insert(try_offset, k.clone(), v.clone()));
+                            } else {
+                                let mut next_block_idx = block_idx;
+                                loop {
+                                    // temporary ignore hash table all fulled
+                                    if next_block_idx + 1 == header.get_size() {
+                                        next_block_idx = 0;
+                                    } else {
+                                        next_block_idx += 1;
+                                    }
+
+                                    let next_block_pid = header.get_block_page_id(next_block_idx);
+                                    if next_block_pid.is_none() {
+                                        LinearProbeHashTable::<K, V>::insert_to_new_block(self.buffer_pool_manager, k, v, &mut header, next_block_idx, 0);
+                                        break;
+                                    }
+
+                                    let block_and_offset = LinearProbeHashTable::<K, V>::find_available_slot(self.buffer_pool_manager, next_block_pid.unwrap());
+                                    if block_and_offset.is_none() {
+                                        continue;
+                                    }
+
+                                    let (mut found_block, offset) = block_and_offset.unwrap();
+                                    assert!(found_block.insert(offset, k.clone(), v.clone()));
+
+                                    block = found_block;
+                                    block_pid = next_block_pid.unwrap();
+                                    break;
+                                }
                             }
                         }
                     }
@@ -176,10 +205,6 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
             None => {
                 LinearProbeHashTable::<K, V>::insert_to_new_block(self.buffer_pool_manager, k, v, &mut header, block_idx, block_offset);
             }
-        }
-
-        if need_cross_block {
-            // deal with cross block collapse
         }
     }
 
@@ -215,7 +240,7 @@ mod tests {
 
     impl ValueType for FakeValue {}
 
-    const FAKE_HASH: fn(&FakeKey) -> u64 = |key: &FakeKey| { key.data[0] as u64 };
+    const FAKE_HASH: fn(&FakeKey) -> u64 = |key: &FakeKey| { key.data[0] as u64 + (key.data[1] as u64 * 16) };
 
     #[test]
     fn should_build_new_linear_probe_hash_table() {
@@ -421,5 +446,81 @@ mod tests {
         assert!(no_available.is_none());
         assert!(found.is_some());
         assert_eq!(found.unwrap().1, 2);
+    }
+
+    #[test]
+    fn should_insert_one_kv_to_hashtable_with_new_block_when_meet_collapse() {
+        // given
+        let bucket_size = 16;
+        let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+        // fill the first block
+        for i in 0..block_capacity {
+            let mut key = FakeKey {data: [0; 10]};
+            key.data[0] = (i % 16) as u8;
+            key.data[1] = (i / 16) as u8;
+            let val = FakeValue {data: [127; 20]};
+            table.insert(&key, &val);
+        }
+
+        // when
+        let mut key = FakeKey { data: [0; 10] };
+        key.data[0] = 0;
+        let mut val = FakeValue { data: [0; 20] };
+        val.data[0] = 33;
+        table.insert(&key, &val);
+
+        // then
+        let second_block_page_id = 2;
+        let block_raw = bpm.fetch_page(second_block_page_id).unwrap().read().unwrap();
+        let block = HashTableBlockPage::<FakeKey, FakeValue>::deserialize(block_raw.get_data()).unwrap();
+        let (k, v) = block.get(0);
+        assert_eq!(k.data[0], 0);
+        assert_eq!(v.data[0], 33);
+    }
+
+    #[test]
+    fn should_insert_one_kv_to_hashtable_with_exist_block_when_meet_collapse() {
+        // given
+        let bucket_size = 16;
+        let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+        // fill the first block
+        let mut key = FakeKey { data: [0; 10] };
+        key.data[0] = 0;
+        let mut val = FakeValue { data: [0; 20] };
+        val.data[0] = 123;
+        table.insert(&key, &val);
+
+        // fill the last block
+        let last_block_base_idx = (bucket_size - 1) * block_capacity;
+        for i in 0..block_capacity {
+            let mut key = FakeKey {data: [0; 10]};
+            key.data[0] = ((last_block_base_idx + i) % 16) as u8;
+            key.data[1] = ((last_block_base_idx + i) / 16) as u8;
+            let val = FakeValue {data: [127; 20]};
+            table.insert(&key, &val);
+        }
+
+        // when
+        let mut key = FakeKey { data: [0; 10] };
+        key.data[0] = ((last_block_base_idx + 1) % 16) as u8;
+        key.data[1] = ((last_block_base_idx + 1) / 16) as u8;
+        let mut val = FakeValue { data: [0; 20] };
+        val.data[0] = 33;
+        table.insert(&key, &val);
+
+        // then
+        let first_block_page_id = 1;
+        let block_raw = bpm.fetch_page(first_block_page_id).unwrap().read().unwrap();
+        let block = HashTableBlockPage::<FakeKey, FakeValue>::deserialize(block_raw.get_data()).unwrap();
+        let (k, v) = block.get(1);
+        assert_eq!(k.data[0], key.data[0]);
+        assert_eq!(k.data[1], key.data[1]);
+        assert_eq!(v.data[0], 33);
     }
 }

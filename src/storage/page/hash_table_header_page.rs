@@ -55,6 +55,8 @@ impl HashTableHeaderPage {
     }
 
     pub fn get_block_page_id(&self, slot_idx: usize) -> Option<PageId> {
+        assert!(slot_idx < self.get_size());
+
         let block_pid = self.block_page_ids[slot_idx];
         if block_pid == INVALID_PAGE_ID {
             return None;
