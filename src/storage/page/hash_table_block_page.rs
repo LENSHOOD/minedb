@@ -68,7 +68,7 @@ impl<K: HashKeyType + DeserializeOwned, V: ValueType + DeserializeOwned> HashTab
     }
 
     pub fn insert(&mut self, slot_idx: usize, key: K, value: V) -> bool {
-        if (&self).occupied(slot_idx) {
+        if (&self).is_occupied(slot_idx) {
             return false;
         }
 
@@ -82,7 +82,7 @@ impl<K: HashKeyType + DeserializeOwned, V: ValueType + DeserializeOwned> HashTab
         (&mapping_type.key, &mapping_type.value)
     }
 
-    fn occupied(&self, slot_idx: usize) -> bool {
+    pub fn is_occupied(&self, slot_idx: usize) -> bool {
         let byte_idx = slot_idx / 8;
         let bit_idx = slot_idx % 8;
         self.occupied[byte_idx] | (!(0x01 << bit_idx)) == 0xff
@@ -134,9 +134,9 @@ mod tests {
         block.occupied[10] = 0b0010_1000;
 
         // when
-        let is_occupied_83 = block.occupied(83);
-        let is_occupied_85 = block.occupied(85);
-        let not_occupied_86 = block.occupied(86);
+        let is_occupied_83 = block.is_occupied(83);
+        let is_occupied_85 = block.is_occupied(85);
+        let not_occupied_86 = block.is_occupied(86);
 
         // then
         assert!(is_occupied_83);
@@ -151,7 +151,7 @@ mod tests {
         block.occupied[10] = 0b0010_1000;
 
         // when
-        assert!(!block.occupied(86));
+        assert!(!block.is_occupied(86));
         block.set(86);
 
         // then
@@ -165,7 +165,7 @@ mod tests {
         block.occupied[10] = 0b0010_1000;
 
         // when
-        assert!(block.occupied(83));
+        assert!(block.is_occupied(83));
         block.clear(83);
 
         // then
@@ -185,7 +185,7 @@ mod tests {
 
         // then
         assert!(inserted);
-        assert!(block.occupied(86));
+        assert!(block.is_occupied(86));
         let mapping = &block.array[86];
         assert_eq!(mapping.key.data[0], 1);
         assert_eq!(mapping.value.data[0], 127);
@@ -204,7 +204,7 @@ mod tests {
 
         // then
         assert!(!inserted);
-        assert!(!block.occupied(86));
+        assert!(!block.is_occupied(86));
     }
 
     #[test]
