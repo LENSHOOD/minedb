@@ -1,18 +1,14 @@
-use std::io;
-use std::sync::RwLock;
+use std::marker::PhantomData;
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 
 use crate::buffer::buffer_pool_manager::BufferPoolManager;
-use crate::common::{KeyType, ValueType};
-use crate::common::hash::{hash, HashKeyType};
+use crate::common::hash::HashKeyType;
+use crate::common::ValueType;
 use crate::container::hash::hash_table::HashTable;
 use crate::storage::page::hash_table_block_page::HashTableBlockPage;
 use crate::storage::page::hash_table_header_page::HashTableHeaderPage;
-use crate::storage::page::page::{INVALID_PAGE_ID, Page, PageId};
-use std::marker::PhantomData;
-use std::borrow::BorrowMut;
+use crate::storage::page::page::PageId;
 
 pub struct LinearProbeHashTable<'a, K: HashKeyType, V: ValueType> {
     header_pid: PageId,
@@ -27,17 +23,17 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
         V: ValueType + DeserializeOwned,
 {
     pub fn new(num_buckets: usize, bpm: &mut BufferPoolManager, hash_fn: fn(&K) -> u64) -> LinearProbeHashTable<K, V> {
-        let mut header_pid = INVALID_PAGE_ID;
-        {
+        let header_pid = {
             let mut header_page = bpm.new_page().unwrap().write().unwrap();
-            header_pid = header_page.get_id();
 
-            let header = HashTableHeaderPage::new(header_pid, num_buckets);
+            let header = HashTableHeaderPage::new(header_page.get_id(), num_buckets);
             let header_raw = header.serialize();
             for i in 0..header_raw.len() {
                 header_page.get_data_mut()[i] = header_raw[i];
             }
-        }
+
+            header_page.get_id()
+        };
 
         LinearProbeHashTable {
             header_pid,
@@ -70,54 +66,72 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
 
         // collapse cannot happen in new block
         assert!(new_block.insert(block_offset, k.clone(), v.clone()));
+        let block_pid = LinearProbeHashTable::<K, V>::update_page(bpm, None, new_block.serialize());
 
-        let block_pid = LinearProbeHashTable::<K, V>::insert_into_new_page(bpm, new_block.serialize());
         header.set(block_pid, block_idx);
-
-        LinearProbeHashTable::<K, V>::update_page(bpm, header.get_page_id(), header.serialize())
+        LinearProbeHashTable::<K, V>::update_page(bpm, Some(header.get_page_id()), header.serialize());
     }
 
-    fn insert_into_new_page(bpm: &mut BufferPoolManager, block_data: Vec<u8>) -> PageId {
-        let mut block_pid = INVALID_PAGE_ID;
-        {
-            let mut block_page = bpm.new_page().unwrap().write().unwrap();
-            let page_data = block_page.get_data_mut();
-            for i in 0..block_data.len() {
-                page_data[i] = block_data[i];
-            }
-            block_pid = block_page.get_id();
-        }
-
-        {
-            bpm.unpin_page(block_pid, true);
-        }
-
-        block_pid
-    }
-
-    fn update_page(bpm: &mut BufferPoolManager, pid: PageId, page_data: Vec<u8>) {
-        {
-            let mut page = bpm.fetch_page(pid).unwrap().write().unwrap();
+    fn update_page(bpm: &mut BufferPoolManager, pid_option: Option<PageId>, page_data: Vec<u8>) -> PageId {
+        let pid_to_return = {
+            let mut page = match pid_option {
+                Some(pid) => bpm.fetch_page(pid).unwrap().write().unwrap(),
+                None => bpm.new_page().unwrap().write().unwrap()
+            };
             let raw_data = page.get_data_mut();
             for i in 0..page_data.len() {
                 raw_data[i] = page_data[i];
             }
-        }
+            page.get_id()
+        };
 
         {
-            bpm.unpin_page(pid, true);
+            bpm.unpin_page(pid_to_return, true);
         }
+
+        pid_to_return
     }
 
-    fn find_available_slot(bpm: &mut BufferPoolManager, block_pid: usize) -> Option<(HashTableBlockPage<K, V>, usize)> {
+    fn find_available_slot(bpm: &mut BufferPoolManager, block_pid: usize, block_offset: usize) -> Option<(HashTableBlockPage<K, V>, usize)> {
         let block = LinearProbeHashTable::<K, V>::get_block(bpm, block_pid);
-        for i in 0..HashTableBlockPage::<K, V>::capacity_of_block() {
+        for i in block_offset..HashTableBlockPage::<K, V>::capacity_of_block() {
             if !block.is_occupied(i) {
                 return Some((block, i));
             }
         }
 
         None
+    }
+
+    fn try_insert_to_appropriate_slot(&mut self, k: &K, v: &V, mut header: &mut HashTableHeaderPage, block_idx: usize, init_block_offset: usize) {
+        let mut next_block_idx = block_idx;
+        let mut block_offset = init_block_offset;
+        loop {
+            let next_block_pid = header.get_block_page_id(next_block_idx);
+            if next_block_pid.is_none() {
+                LinearProbeHashTable::<K, V>::insert_to_new_block(self.buffer_pool_manager, k, v, &mut header, next_block_idx, block_offset);
+                break;
+            }
+
+            let block_and_offset = LinearProbeHashTable::<K, V>::find_available_slot(self.buffer_pool_manager, next_block_pid.unwrap(), block_offset);
+            if block_and_offset.is_none() {
+                // temporary ignore hash table all fulled
+                if next_block_idx + 1 == header.get_size() {
+                    next_block_idx = 0;
+                } else {
+                    next_block_idx += 1;
+                }
+                block_offset = 0;
+
+                continue;
+            }
+
+            let (mut found_block, offset) = block_and_offset.unwrap();
+            assert!(found_block.insert(offset, k.clone(), v.clone()));
+            LinearProbeHashTable::<K, V>::update_page(self.buffer_pool_manager, next_block_pid, found_block.serialize());
+
+            break;
+        }
     }
 }
 
@@ -141,78 +155,14 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
         let block_idx = slot_idx / slot_capacity;
         let block_offset = slot_idx - block_idx * slot_capacity;
 
-        let mut need_cross_block = false;
-        match header.get_block_page_id(block_idx) {
-            Some(mut block_pid) => {
-                {
-                    let mut block = HashTableBlockPage::new();
-                    {
-                        block = LinearProbeHashTable::<K, V>::get_block(self.buffer_pool_manager, block_pid);
-                        let inserted = block.insert(block_offset, k.clone(), v.clone());
-
-                        if !inserted {
-                            // deal with collapse
-                            let mut try_offset = block_offset;
-                            while block.is_occupied(try_offset) {
-                                try_offset += 1;
-                                // goes into bottom of block, need try next block
-                                if try_offset == slot_capacity {
-                                    need_cross_block = true;
-                                    break;
-                                }
-                            }
-
-                            // found a empty slot
-                            if !need_cross_block {
-                                assert!(block.insert(try_offset, k.clone(), v.clone()));
-                            } else {
-                                let mut next_block_idx = block_idx;
-                                loop {
-                                    // temporary ignore hash table all fulled
-                                    if next_block_idx + 1 == header.get_size() {
-                                        next_block_idx = 0;
-                                    } else {
-                                        next_block_idx += 1;
-                                    }
-
-                                    let next_block_pid = header.get_block_page_id(next_block_idx);
-                                    if next_block_pid.is_none() {
-                                        LinearProbeHashTable::<K, V>::insert_to_new_block(self.buffer_pool_manager, k, v, &mut header, next_block_idx, 0);
-                                        break;
-                                    }
-
-                                    let block_and_offset = LinearProbeHashTable::<K, V>::find_available_slot(self.buffer_pool_manager, next_block_pid.unwrap());
-                                    if block_and_offset.is_none() {
-                                        continue;
-                                    }
-
-                                    let (mut found_block, offset) = block_and_offset.unwrap();
-                                    assert!(found_block.insert(offset, k.clone(), v.clone()));
-
-                                    block = found_block;
-                                    block_pid = next_block_pid.unwrap();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    {
-                        LinearProbeHashTable::<K, V>::update_page(self.buffer_pool_manager, block_pid, block.serialize())
-                    }
-                }
-            }
-            None => {
-                LinearProbeHashTable::<K, V>::insert_to_new_block(self.buffer_pool_manager, k, v, &mut header, block_idx, block_offset);
-            }
-        }
+        self.try_insert_to_appropriate_slot(k, v, &mut header, block_idx, block_offset);
     }
 
-    fn remove(&mut self, k: &K) {
+    fn remove(&mut self, _k: &K) {
         todo!()
     }
 
-    fn get_value(&self, k: &K) -> Vec<V> {
+    fn get_value(&self, _k: &K) -> Vec<V> {
         todo!()
     }
 }
@@ -249,11 +199,10 @@ mod tests {
         let size: usize = 16;
 
         // when
-        let mut header_pid = INVALID_PAGE_ID;
-        {
+        let header_pid = {
             let lpht = LinearProbeHashTable::<FakeKey, FakeValue>::new(size, &mut bpm, hash);
-            header_pid = lpht.header_pid;
-        }
+            lpht.header_pid
+        };
 
         // then
         let page_with_lock = bpm.fetch_page(header_pid).unwrap();
@@ -416,31 +365,29 @@ mod tests {
     fn should_find_next_block_when_index_collapse() {
         // given
         let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
-        let bucket_size = 16;
         let mut bpm = BufferPoolManager::new_default(100);
 
         // current block
-        let mut curr_block_pid = INVALID_PAGE_ID;
+        let curr_block_pid=
         {
             let mut curr_block = HashTableBlockPage::<FakeKey, FakeValue>::new();
             for i in 0..block_capacity {
                 curr_block.insert(i, FakeKey { data: [0; 10] }, FakeValue { data: [0; 20] });
             }
-            curr_block_pid = LinearProbeHashTable::<FakeKey, FakeValue>::insert_into_new_page(&mut bpm, curr_block.serialize());
-        }
+            LinearProbeHashTable::<FakeKey, FakeValue>::update_page(&mut bpm, None, curr_block.serialize())
+        };
 
         // next block
-        let mut next_block_pid = INVALID_PAGE_ID;
-        {
+        let next_block_pid = {
             let mut next_block = HashTableBlockPage::<FakeKey, FakeValue>::new();
             next_block.insert(0, FakeKey {data: [0; 10]}, FakeValue {data: [0; 20]});
             next_block.insert(1, FakeKey {data: [0; 10]}, FakeValue {data: [0; 20]});
-            next_block_pid = LinearProbeHashTable::<FakeKey, FakeValue>::insert_into_new_page(&mut bpm, next_block.serialize());
-        }
+            LinearProbeHashTable::<FakeKey, FakeValue>::update_page(&mut bpm, None, next_block.serialize())
+        };
 
         // when
-        let no_available =  LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(&mut bpm, curr_block_pid);
-        let found =  LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(&mut bpm, next_block_pid);
+        let no_available =  LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(&mut bpm, curr_block_pid, 0);
+        let found =  LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(&mut bpm, next_block_pid, 0);
 
         // then
         assert!(no_available.is_none());
