@@ -113,10 +113,27 @@ mod tests {
     }
     impl HashKeyType for FakeKey {}
 
+    impl PartialEq<Self> for FakeKey {
+        fn eq(&self, other: &Self) -> bool {
+            self.data == other.data
+        }
+    }
+
+    impl Eq for FakeKey {}
+
     #[derive(Default, Clone, Serialize, Deserialize)]
     struct FakeValue {
         data: [u8; 20]
     }
+
+    impl Eq for FakeValue {}
+
+    impl PartialEq<Self> for FakeValue {
+        fn eq(&self, other: &Self) -> bool {
+            self.data == other.data
+        }
+    }
+
     impl ValueType for FakeValue {}
 
     #[test]

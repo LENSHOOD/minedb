@@ -23,6 +23,14 @@ mod tests {
     }
     impl HashKeyType for TestHashKey {}
 
+    impl PartialEq<Self> for TestHashKey {
+        fn eq(&self, other: &Self) -> bool {
+            self.i == other.i
+        }
+    }
+
+    impl Eq for TestHashKey {}
+
     #[test]
     fn should_cal_hash_for_hash_key_type() {
         // given

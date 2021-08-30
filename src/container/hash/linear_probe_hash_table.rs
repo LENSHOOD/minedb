@@ -5,6 +5,8 @@ use serde::de::DeserializeOwned;
 use crate::buffer::buffer_pool_manager::BufferPoolManager;
 use crate::common::hash::HashKeyType;
 use crate::common::ValueType;
+use crate::container::hash::FindSlotResult;
+use crate::container::hash::FindSlotResult::*;
 use crate::container::hash::hash_table::HashTable;
 use crate::storage::page::hash_table_block_page::HashTableBlockPage;
 use crate::storage::page::hash_table_header_page::HashTableHeaderPage;
@@ -14,7 +16,7 @@ pub struct LinearProbeHashTable<'a, K: HashKeyType, V: ValueType> {
     header_pid: PageId,
     buffer_pool_manager: &'a mut BufferPoolManager,
     hash_fn: fn(&K) -> u64,
-    phantom: PhantomData<V>
+    phantom: PhantomData<V>,
 }
 
 impl<'a, K, V> LinearProbeHashTable<'a, K, V>
@@ -39,7 +41,7 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
             header_pid,
             buffer_pool_manager: bpm,
             hash_fn,
-            phantom: PhantomData
+            phantom: PhantomData,
         }
     }
 
@@ -57,11 +59,11 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
     }
 
     fn insert_to_new_block(bpm: &mut BufferPoolManager,
-                              k: &K,
-                              v: &V,
-                              header: &mut HashTableHeaderPage,
-                              block_idx: usize,
-                              block_offset: usize) {
+                           k: &K,
+                           v: &V,
+                           header: &mut HashTableHeaderPage,
+                           block_idx: usize,
+                           block_offset: usize) {
         let mut new_block = HashTableBlockPage::<K, V>::new();
 
         // collapse cannot happen in new block
@@ -92,29 +94,39 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
         pid_to_return
     }
 
-    fn find_available_slot(bpm: &mut BufferPoolManager, block_pid: usize, block_offset: usize) -> Option<(HashTableBlockPage<K, V>, usize)> {
+    fn find_available_slot(bpm: &mut BufferPoolManager,
+                           key: &K,
+                           val: &V,
+                           block_pid: usize,
+                           block_offset: usize) -> FindSlotResult<(HashTableBlockPage<K, V>, usize)> {
         let block = LinearProbeHashTable::<K, V>::get_block(bpm, block_pid);
         for i in block_offset..HashTableBlockPage::<K, V>::capacity_of_block() {
             if !block.is_occupied(i) {
-                return Some((block, i));
+                return Found((block, i));
+            }
+
+            let (k, v) = block.get(i);
+            if key.eq(k) && val.eq(v) {
+                return Duplicated;
             }
         }
 
-        None
+        NotFound
     }
 
-    fn try_insert_to_appropriate_slot(&mut self, k: &K, v: &V, mut header: &mut HashTableHeaderPage, block_idx: usize, init_block_offset: usize) {
+    fn try_insert_to_appropriate_slot(&mut self, k: &K, v: &V, mut header: &mut HashTableHeaderPage, block_idx: usize, init_block_offset: usize) -> bool {
         let mut next_block_idx = block_idx;
         let mut block_offset = init_block_offset;
         loop {
             let next_block_pid = header.get_block_page_id(next_block_idx);
             if next_block_pid.is_none() {
                 LinearProbeHashTable::<K, V>::insert_to_new_block(self.buffer_pool_manager, k, v, &mut header, next_block_idx, block_offset);
-                break;
+                return true;
             }
 
-            let block_and_offset = LinearProbeHashTable::<K, V>::find_available_slot(self.buffer_pool_manager, next_block_pid.unwrap(), block_offset);
-            if block_and_offset.is_none() {
+            let block_and_offset = LinearProbeHashTable::<K, V>::find_available_slot(
+                self.buffer_pool_manager, k, v, next_block_pid.unwrap(), block_offset);
+            if block_and_offset.not_found() {
                 // temporary ignore hash table all fulled
                 if next_block_idx + 1 == header.get_size() {
                     next_block_idx = 0;
@@ -126,11 +138,15 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
                 continue;
             }
 
+            if block_and_offset.duplicated() {
+                return false;
+            }
+
             let (mut found_block, offset) = block_and_offset.unwrap();
             assert!(found_block.insert(offset, k.clone(), v.clone()));
             LinearProbeHashTable::<K, V>::update_page(self.buffer_pool_manager, next_block_pid, found_block.serialize());
 
-            break;
+            return true;
         }
     }
 }
@@ -147,7 +163,7 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
     ///         2. find same k-v pair, cannot insert, do nothing
     ///    else need resize
     /// 3. if slot of page not exist, allocate one
-    fn insert(&mut self, k: &K, v: &V) {
+    fn insert(&mut self, k: &K, v: &V) -> bool {
         let mut header = self.get_header();
 
         let slot_capacity = HashTableBlockPage::<K, V>::capacity_of_block();
@@ -155,7 +171,7 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
         let block_idx = slot_idx / slot_capacity;
         let block_offset = slot_idx - block_idx * slot_capacity;
 
-        self.try_insert_to_appropriate_slot(k, v, &mut header, block_idx, block_offset);
+        self.try_insert_to_appropriate_slot(k, v, &mut header, block_idx, block_offset)
     }
 
     fn remove(&mut self, _k: &K) {
@@ -183,9 +199,25 @@ mod tests {
 
     impl HashKeyType for FakeKey {}
 
+    impl PartialEq<Self> for FakeKey {
+        fn eq(&self, other: &Self) -> bool {
+            self.data == other.data
+        }
+    }
+
+    impl Eq for FakeKey {}
+
     #[derive(Default, Clone, Serialize, Deserialize)]
     struct FakeValue {
         data: [u8; 20],
+    }
+
+    impl Eq for FakeValue {}
+
+    impl PartialEq<Self> for FakeValue {
+        fn eq(&self, other: &Self) -> bool {
+            self.data == other.data
+        }
     }
 
     impl ValueType for FakeValue {}
@@ -207,9 +239,7 @@ mod tests {
         // then
         let page_with_lock = bpm.fetch_page(header_pid).unwrap();
         let header_raw = page_with_lock.read().unwrap();
-        let header: &HashTableHeaderPage = unsafe {
-            std::mem::transmute(header_raw.get_data().as_ptr())
-        };
+        let header: HashTableHeaderPage = HashTableHeaderPage::deserialize(header_raw.get_data()).unwrap();
 
         assert_eq!(header.get_size(), size);
         assert_eq!(header.get_page_id(), header_raw.get_id());
@@ -368,30 +398,35 @@ mod tests {
         let mut bpm = BufferPoolManager::new_default(100);
 
         // current block
-        let curr_block_pid=
-        {
-            let mut curr_block = HashTableBlockPage::<FakeKey, FakeValue>::new();
-            for i in 0..block_capacity {
-                curr_block.insert(i, FakeKey { data: [0; 10] }, FakeValue { data: [0; 20] });
-            }
-            LinearProbeHashTable::<FakeKey, FakeValue>::update_page(&mut bpm, None, curr_block.serialize())
-        };
+        let curr_block_pid =
+            {
+                let mut curr_block = HashTableBlockPage::<FakeKey, FakeValue>::new();
+                for i in 0..block_capacity {
+                    curr_block.insert(i, FakeKey { data: [0; 10] }, FakeValue { data: [0; 20] });
+                }
+                LinearProbeHashTable::<FakeKey, FakeValue>::update_page(&mut bpm, None, curr_block.serialize())
+            };
 
         // next block
         let next_block_pid = {
             let mut next_block = HashTableBlockPage::<FakeKey, FakeValue>::new();
-            next_block.insert(0, FakeKey {data: [0; 10]}, FakeValue {data: [0; 20]});
-            next_block.insert(1, FakeKey {data: [0; 10]}, FakeValue {data: [0; 20]});
+            next_block.insert(0, FakeKey { data: [0; 10] }, FakeValue { data: [0; 20] });
+            next_block.insert(1, FakeKey { data: [0; 10] }, FakeValue { data: [0; 20] });
             LinearProbeHashTable::<FakeKey, FakeValue>::update_page(&mut bpm, None, next_block.serialize())
         };
 
         // when
-        let no_available =  LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(&mut bpm, curr_block_pid, 0);
-        let found =  LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(&mut bpm, next_block_pid, 0);
+        let no_available = LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(
+            &mut bpm, &FakeKey { data: [1; 10] }, &FakeValue { data: [0; 20] }, curr_block_pid, 0);
+        let duplicated = LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(
+            &mut bpm, &FakeKey { data: [0; 10] }, &FakeValue { data: [0; 20] }, next_block_pid, 0);
+        let found = LinearProbeHashTable::<FakeKey, FakeValue>::find_available_slot(
+            &mut bpm, &FakeKey { data: [1; 10] }, &FakeValue { data: [1; 20] }, next_block_pid, 0);
 
         // then
-        assert!(no_available.is_none());
-        assert!(found.is_some());
+        assert!(no_available.not_found());
+        assert!(duplicated.duplicated());
+        assert!(found.found());
         assert_eq!(found.unwrap().1, 2);
     }
 
@@ -405,10 +440,10 @@ mod tests {
 
         // fill the first block
         for i in 0..block_capacity {
-            let mut key = FakeKey {data: [0; 10]};
+            let mut key = FakeKey { data: [0; 10] };
             key.data[0] = (i % 16) as u8;
             key.data[1] = (i / 16) as u8;
-            let val = FakeValue {data: [127; 20]};
+            let val = FakeValue { data: [127; 20] };
             table.insert(&key, &val);
         }
 
@@ -446,10 +481,10 @@ mod tests {
         // fill the last block
         let last_block_base_idx = (bucket_size - 1) * block_capacity;
         for i in 0..block_capacity {
-            let mut key = FakeKey {data: [0; 10]};
+            let mut key = FakeKey { data: [0; 10] };
             key.data[0] = ((last_block_base_idx + i) % 16) as u8;
             key.data[1] = ((last_block_base_idx + i) / 16) as u8;
-            let val = FakeValue {data: [127; 20]};
+            let val = FakeValue { data: [127; 20] };
             table.insert(&key, &val);
         }
 
@@ -469,5 +504,47 @@ mod tests {
         assert_eq!(k.data[0], key.data[0]);
         assert_eq!(k.data[1], key.data[1]);
         assert_eq!(v.data[0], 33);
+    }
+
+    #[test]
+    fn should_not_insert_when_k_v_all_equals() {
+        // given
+        let bucket_size = 16;
+        let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+        // fill the first block
+        for i in 0..block_capacity {
+            let mut key = FakeKey { data: [0; 10] };
+            key.data[0] = (i % 16) as u8;
+            key.data[1] = (i / 16) as u8;
+            let val = FakeValue { data: [127; 20] };
+            table.insert(&key, &val);
+        }
+
+        // fill the next block's first slot
+        let mut key = FakeKey { data: [0; 10] };
+        key.data[0] = (block_capacity + 1 % 16) as u8;
+        key.data[1] = (block_capacity + 1 / 16) as u8;
+        let val = FakeValue { data: [127; 20] };
+        table.insert(&key, &val);
+
+        // when
+        let mut key = FakeKey { data: [0; 10] };
+        key.data[0] = 3;
+        let val = FakeValue { data: [127; 20] };
+
+        // then (not inserted)
+        assert!(!table.insert(&key, &val));
+
+        // when
+        let mut key = FakeKey { data: [0; 10] };
+        key.data[0] = (block_capacity + 1 % 16) as u8;
+        key.data[1] = (block_capacity + 1 / 16) as u8;
+        let val = FakeValue { data: [127; 20] };
+
+        // then (not inserted)
+        assert!(!table.insert(&key, &val));
     }
 }
