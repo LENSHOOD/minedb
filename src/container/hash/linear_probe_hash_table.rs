@@ -114,6 +114,31 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
         NotFound
     }
 
+    fn find_values_in_block(bpm: &mut BufferPoolManager,
+                            key: &K,
+                            block_pid: usize,
+                            block_offset: usize,
+                            res: &mut Vec<V>) -> bool {
+        let slot_capacity = HashTableBlockPage::<K, V>::capacity_of_block();
+        let blk = LinearProbeHashTable::<K, V>::get_block(bpm, block_pid);
+        let mut curr_offset = block_offset;
+        for _ in block_offset..slot_capacity {
+            if !blk.is_occupied(curr_offset) {
+                return true;
+            }
+
+            let (k, v) = blk.get(curr_offset);
+            if k.eq(key) {
+                res.push((*v).clone());
+                curr_offset += 1;
+            } else {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn try_insert_to_appropriate_slot(&mut self, k: &K, v: &V, mut header: &mut HashTableHeaderPage, block_idx: usize, init_block_offset: usize) -> bool {
         let mut next_block_idx = block_idx;
         let mut block_offset = init_block_offset;
@@ -144,7 +169,8 @@ impl<'a, K, V> LinearProbeHashTable<'a, K, V>
 
             let (mut found_block, offset) = block_and_offset.unwrap();
             assert!(found_block.insert(offset, k.clone(), v.clone()));
-            LinearProbeHashTable::<K, V>::update_page(self.buffer_pool_manager, next_block_pid, found_block.serialize());
+            let vec = found_block.serialize();
+            LinearProbeHashTable::<K, V>::update_page(self.buffer_pool_manager, next_block_pid, vec);
 
             return true;
         }
@@ -184,29 +210,37 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
         let slot_capacity = HashTableBlockPage::<K, V>::capacity_of_block();
         let slot_idx = ((self.hash_fn)(k) % (header.get_size() * slot_capacity) as u64) as usize;
         let block_idx = slot_idx / slot_capacity;
-        let block_offset = slot_idx - block_idx * slot_capacity;
+        let init_block_offset = slot_idx - block_idx * slot_capacity;
 
         let mut res = Vec::new();
-        let blk_pid = header.get_block_page_id(block_idx);
-        if blk_pid.is_none() {
-            return res;
-        }
-
-        let blk = LinearProbeHashTable::<K, V>::get_block(self.buffer_pool_manager, blk_pid.unwrap());
-        let mut curr_offset = block_offset;
+        let mut next_block_idx = block_idx;
+        let mut block_offset = init_block_offset;
         loop {
-            if !blk.is_occupied(curr_offset) {
+            let blk_pid = header.get_block_page_id(next_block_idx);
+            if blk_pid.is_none() {
                 return res;
             }
 
-            let (key, val) = blk.get(curr_offset);
-            if k.eq(key) {
-                res.push((*val).clone());
-                curr_offset += 1;
-            } else {
-                return res;
+            let finished = LinearProbeHashTable::<K, V>::find_values_in_block(
+                self.buffer_pool_manager,
+                k,
+                blk_pid.unwrap(),
+                block_offset,
+                &mut res);
+
+            if finished {
+                break;
             }
+
+            if next_block_idx + 1 == header.get_size() {
+                next_block_idx = 0;
+            } else {
+                next_block_idx += 1;
+            }
+            block_offset = 0;
         }
+
+        res
     }
 }
 
@@ -591,5 +625,36 @@ mod tests {
         for i in 0..keys_num {
             assert_eq!(res[i].data[0], i as u8);
         }
+    }
+
+    #[test]
+    fn should_get_kvs_with_same_key_across_block() {
+        // given
+        let bucket_size = 16;
+        let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+
+        // fill the last block
+        let last_block_base_idx = (bucket_size - 1) * block_capacity;
+        for i in 0..(block_capacity-1) {
+            let (key, val) = build_kv((last_block_base_idx + i) as u64, 127);
+            table.insert(&key, &val);
+        }
+
+        // when
+        // fill the last_blk last_slot and first_blk first_slot
+        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64,  88);
+        table.insert(&key, &val);
+        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64,  99);
+        table.insert(&key, &val);
+
+        let res = table.get_value(&key);
+
+        // then
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].data[0], 88);
+        assert_eq!(res[1].data[0], 99);
     }
 }

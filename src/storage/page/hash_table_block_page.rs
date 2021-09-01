@@ -51,10 +51,14 @@ impl<K: HashKeyType + DeserializeOwned, V: ValueType + DeserializeOwned> HashTab
 
         let mapping_type_size = mem::size_of::<MappingType<K, V>>();
 
-        // [(page_data.len() / mapping_type_size - 1) * mapping_type_size]:
-        // cal the largest mapping type numbers the page_data can hold, minus one
-        // to avoid out of bound, then multiple of mapping_type_size to get range of bytes
-        let data_range = 2 * array_bit_size..(page_data.len() / mapping_type_size - 1) * mapping_type_size;
+        // explain of end range <((page_data.len() - 2 * array_bit_size) / mapping_type_size) * mapping_type_size + 2 * array_bit_size>
+        // 1. <((page_data.len() - 2 * array_bit_size) / mapping_type_size)>:
+        //    largest mapping type numbers the page_data can hold
+        // 2. <* mapping_type_size>:
+        //    total size of whole mapping type
+        // 3. <+ 2 * array_bit_size>:
+        //    plus the top two bit array size
+        let data_range = 2 * array_bit_size..((page_data.len() - 2 * array_bit_size) / mapping_type_size) * mapping_type_size + 2 * array_bit_size;
         for i in data_range.step_by(mapping_type_size) {
             let curr_mapping_type_index = (i - 2 * array_bit_size) / mapping_type_size;
             array[curr_mapping_type_index] = bincode::deserialize::<MappingType<K, V>>(&(page_data[i..i + mapping_type_size])).unwrap();
