@@ -179,7 +179,7 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
     }
 
     fn get_value(&mut self, k: &K) -> Vec<V> {
-        let mut header = self.get_header();
+        let header = self.get_header();
 
         let slot_capacity = HashTableBlockPage::<K, V>::capacity_of_block();
         let slot_idx = ((self.hash_fn)(k) % (header.get_size() * slot_capacity) as u64) as usize;
@@ -193,16 +193,20 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
         }
 
         let blk = LinearProbeHashTable::<K, V>::get_block(self.buffer_pool_manager, blk_pid.unwrap());
-        if !blk.is_occupied(block_offset) {
-            return res;
-        }
+        let mut curr_offset = block_offset;
+        loop {
+            if !blk.is_occupied(curr_offset) {
+                return res;
+            }
 
-        let (key, val) = blk.get(block_offset);
-        if k.eq(key) {
-            res.push((*val).clone())
+            let (key, val) = blk.get(curr_offset);
+            if k.eq(key) {
+                res.push((*val).clone());
+                curr_offset += 1;
+            } else {
+                return res;
+            }
         }
-
-        res
     }
 }
 
@@ -562,5 +566,30 @@ mod tests {
         // then
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].data[0], 3);
+    }
+
+    #[test]
+    fn should_get_kvs_with_same_key() {
+        // given
+        let bucket_size = 16;
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+        // fill the first block
+        let keys_num = 8;
+        for i in 0..keys_num {
+            let (key, val) = build_kv(33, i as u64);
+            table.insert(&key, &val);
+        }
+
+        // when
+        let (key, _) = build_kv(33, 0);
+        let res = table.get_value(&key);
+
+        // then
+        assert_eq!(res.len(), keys_num);
+        for i in 0..keys_num {
+            assert_eq!(res[i].data[0], i as u8);
+        }
     }
 }
