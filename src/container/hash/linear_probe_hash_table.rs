@@ -222,7 +222,23 @@ mod tests {
 
     impl ValueType for FakeValue {}
 
-    const FAKE_HASH: fn(&FakeKey) -> u64 = |key: &FakeKey| { key.data[0] as u64 + (key.data[1] as u64 * 16) };
+    const FAKE_HASH: fn(&FakeKey) -> u64 = |key: &FakeKey| { bincode::deserialize(&key.data).unwrap() };
+
+    fn build_kv(k: u64, v: u64) -> (FakeKey, FakeValue) {
+        let k_vec = bincode::serialize(&k).unwrap();
+        let mut key = FakeKey { data: [0; 10] };
+        for i in 0..k_vec.len() {
+            key.data[i] = k_vec[i]
+        }
+
+        let v_vec = bincode::serialize(&v).unwrap();
+        let mut val = FakeValue { data: [0; 20] };
+        for i in 0..v_vec.len() {
+            val.data[i] = v_vec[i]
+        }
+
+        (key, val)
+    }
 
     #[test]
     fn should_build_new_linear_probe_hash_table() {
@@ -252,17 +268,13 @@ mod tests {
         let mut bpm = BufferPoolManager::new_default(100);
         let mut header = LinearProbeHashTable::<FakeKey, FakeValue>::new(bucket_size, &mut bpm, FAKE_HASH).get_header();
 
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = 21;
-        let mut val = FakeValue { data: [0; 20] };
-        val.data[0] = 127;
-
         let new_block_pid = 1;
         let slot_idx = 0;
         let block_index = 0;
         let block_offset = 21;
 
         // when
+        let (key, val) = build_kv(21, 127);
         LinearProbeHashTable::insert_to_new_block(&mut bpm, &key, &val, &mut header, block_index, block_offset);
 
         // then
@@ -283,12 +295,9 @@ mod tests {
         let bucket_size = 16;
         let mut bpm = BufferPoolManager::new_default(100);
         let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, hash);
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = 1;
-        let mut val = FakeValue { data: [0; 20] };
-        val.data[0] = 127;
 
         // when
+        let (key, val) = build_kv(1, 127);
         table.insert(&key, &val);
 
         // then
@@ -317,16 +326,11 @@ mod tests {
         let mut bpm = BufferPoolManager::new_default(100);
         let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
 
-        let mut key1 = FakeKey { data: [0; 10] };
-        key1.data[0] = 1;
-        let mut val = FakeValue { data: [0; 20] };
-        val.data[0] = 127;
+        let (key1, val) = build_kv(1, 127);
         table.insert(&key1, &val);
 
-        let mut key2 = FakeKey { data: [0; 10] };
-        key2.data[0] = 2;
-
         // when
+        let (key2, val) = build_kv(2, 127);
         table.insert(&key2, &val);
 
         // then
@@ -355,18 +359,11 @@ mod tests {
         let mut bpm = BufferPoolManager::new_default(100);
         let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
 
-        let mut key1 = FakeKey { data: [0; 10] };
-        key1.data[0] = 1;
-        let mut val1 = FakeValue { data: [0; 20] };
-        val1.data[0] = 127;
+        let (key1, val1) = build_kv(1, 127);
         table.insert(&key1, &val1);
 
-        let mut key2 = FakeKey { data: [0; 10] };
-        key2.data[0] = 1;
-        let mut val2 = FakeValue { data: [0; 20] };
-        val2.data[0] = 126;
-
         // when
+        let (key2, val2) = build_kv(1, 126);
         table.insert(&key2, &val2);
 
         // then
@@ -440,18 +437,12 @@ mod tests {
 
         // fill the first block
         for i in 0..block_capacity {
-            let mut key = FakeKey { data: [0; 10] };
-            key.data[0] = (i % 16) as u8;
-            key.data[1] = (i / 16) as u8;
-            let val = FakeValue { data: [127; 20] };
+            let (key, val) = build_kv(i as u64, 127);
             table.insert(&key, &val);
         }
 
         // when
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = 0;
-        let mut val = FakeValue { data: [0; 20] };
-        val.data[0] = 33;
+        let (key, val) = build_kv(0, 33);
         table.insert(&key, &val);
 
         // then
@@ -472,28 +463,18 @@ mod tests {
         let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
 
         // fill the first block
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = 0;
-        let mut val = FakeValue { data: [0; 20] };
-        val.data[0] = 123;
+        let (key, val) = build_kv(0, 123);
         table.insert(&key, &val);
 
         // fill the last block
         let last_block_base_idx = (bucket_size - 1) * block_capacity;
         for i in 0..block_capacity {
-            let mut key = FakeKey { data: [0; 10] };
-            key.data[0] = ((last_block_base_idx + i) % 16) as u8;
-            key.data[1] = ((last_block_base_idx + i) / 16) as u8;
-            let val = FakeValue { data: [127; 20] };
+            let (key, val) = build_kv((last_block_base_idx + i) as u64, 127);
             table.insert(&key, &val);
         }
 
         // when
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = ((last_block_base_idx + 1) % 16) as u8;
-        key.data[1] = ((last_block_base_idx + 1) / 16) as u8;
-        let mut val = FakeValue { data: [0; 20] };
-        val.data[0] = 33;
+        let (key, val) = build_kv((last_block_base_idx + 1) as u64, 33);
         table.insert(&key, &val);
 
         // then
@@ -516,33 +497,22 @@ mod tests {
 
         // fill the first block
         for i in 0..block_capacity {
-            let mut key = FakeKey { data: [0; 10] };
-            key.data[0] = (i % 16) as u8;
-            key.data[1] = (i / 16) as u8;
-            let val = FakeValue { data: [127; 20] };
+            let (key, val) = build_kv(i as u64, 127);
             table.insert(&key, &val);
         }
 
         // fill the next block's first slot
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = (block_capacity + 1 % 16) as u8;
-        key.data[1] = (block_capacity + 1 / 16) as u8;
-        let val = FakeValue { data: [127; 20] };
+        let (key, val) = build_kv((block_capacity + 1) as u64, 127);
         table.insert(&key, &val);
 
         // when
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = 3;
-        let val = FakeValue { data: [127; 20] };
+        let (key, val) = build_kv(3, 127);
 
         // then (not inserted)
         assert!(!table.insert(&key, &val));
 
         // when
-        let mut key = FakeKey { data: [0; 10] };
-        key.data[0] = (block_capacity + 1 % 16) as u8;
-        key.data[1] = (block_capacity + 1 / 16) as u8;
-        let val = FakeValue { data: [127; 20] };
+        let (key, val) = build_kv((block_capacity + 1) as u64, 127);
 
         // then (not inserted)
         assert!(!table.insert(&key, &val));
