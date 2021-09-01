@@ -178,8 +178,31 @@ impl<'a, K, V> HashTable<K, V> for LinearProbeHashTable<'a, K, V> where
         todo!()
     }
 
-    fn get_value(&self, _k: &K) -> Vec<V> {
-        todo!()
+    fn get_value(&mut self, k: &K) -> Vec<V> {
+        let mut header = self.get_header();
+
+        let slot_capacity = HashTableBlockPage::<K, V>::capacity_of_block();
+        let slot_idx = ((self.hash_fn)(k) % (header.get_size() * slot_capacity) as u64) as usize;
+        let block_idx = slot_idx / slot_capacity;
+        let block_offset = slot_idx - block_idx * slot_capacity;
+
+        let mut res = Vec::new();
+        let blk_pid = header.get_block_page_id(block_idx);
+        if blk_pid.is_none() {
+            return res;
+        }
+
+        let blk = LinearProbeHashTable::<K, V>::get_block(self.buffer_pool_manager, blk_pid.unwrap());
+        if !blk.is_occupied(block_offset) {
+            return res;
+        }
+
+        let (key, val) = blk.get(block_offset);
+        if k.eq(key) {
+            res.push((*val).clone())
+        }
+
+        res
     }
 }
 
@@ -516,5 +539,28 @@ mod tests {
 
         // then (not inserted)
         assert!(!table.insert(&key, &val));
+    }
+
+    #[test]
+    fn should_get_kv_from_first_block() {
+        // given
+        let bucket_size = 16;
+        let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+        // fill the first block
+        for i in 0..block_capacity {
+            let (key, val) = build_kv(i as u64, i as u64);
+            table.insert(&key, &val);
+        }
+
+        // when
+        let (key, _) = build_kv(3, 0);
+        let res = table.get_value(&key);
+
+        // then
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].data[0], 3);
     }
 }
