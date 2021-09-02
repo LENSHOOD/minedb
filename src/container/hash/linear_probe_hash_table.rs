@@ -635,19 +635,18 @@ mod tests {
         let mut bpm = BufferPoolManager::new_default(100);
         let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
 
-
         // fill the last block
         let last_block_base_idx = (bucket_size - 1) * block_capacity;
-        for i in 0..(block_capacity-1) {
+        for i in 0..(block_capacity - 1) {
             let (key, val) = build_kv((last_block_base_idx + i) as u64, 127);
             table.insert(&key, &val);
         }
 
         // when
         // fill the last_blk last_slot and first_blk first_slot
-        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64,  88);
+        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64, 88);
         table.insert(&key, &val);
-        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64,  99);
+        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64, 99);
         table.insert(&key, &val);
 
         let res = table.get_value(&key);
@@ -656,5 +655,35 @@ mod tests {
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].data[0], 88);
         assert_eq!(res[1].data[0], 99);
+    }
+
+    #[test]
+    fn should_not_get_kvs_when_not_matched() {
+        // given
+        let bucket_size = 16;
+        let block_capacity = HashTableBlockPage::<FakeKey, FakeValue>::capacity_of_block();
+        let mut bpm = BufferPoolManager::new_default(100);
+        let mut table = LinearProbeHashTable::new(bucket_size, &mut bpm, FAKE_HASH);
+
+        // fill the last block
+        let last_block_base_idx = (bucket_size - 1) * block_capacity;
+        for i in 0..(block_capacity - 1) {
+            let (key, val) = build_kv((last_block_base_idx + i) as u64, 127);
+            table.insert(&key, &val);
+        }
+
+        // fill the last_blk last_slot and first_blk first_slot
+        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64, 88);
+        table.insert(&key, &val);
+        let (key, val) = build_kv((last_block_base_idx + block_capacity - 1) as u64, 99);
+        table.insert(&key, &val);
+
+        // when
+        // slot 0 not exist, and occupied by key = (last_block_base_idx + block_capacity - 1), val = 99
+        let (key, _) = build_kv(0, 0);
+        let res = table.get_value(&key);
+
+        // then
+        assert_eq!(res.len(), 0);
     }
 }
