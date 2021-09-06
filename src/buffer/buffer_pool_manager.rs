@@ -1,12 +1,14 @@
-use crate::buffer::replacer::{Replacer, ClockReplacer};
-use crate::storage::disk::disk_manager::*;
-use crate::storage::page::page::*;
 use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::sync::RwLock;
+
 use crossbeam::queue::ArrayQueue;
 use dashmap::DashMap;
+
+use crate::buffer::replacer::{ClockReplacer, Replacer};
+use crate::storage::disk::disk_manager::*;
+use crate::storage::page::page::*;
 
 type FrameId = usize;
 pub struct BufferPoolManager {
@@ -83,11 +85,11 @@ impl BufferPoolManager {
         match self.free_list.pop() {
             Some(frame_id) => Ok(frame_id),
             None => {
-                let (success, vic_fid) = (&mut self.replacer).victim();
-                if !success {
-                    return Err(Error::new(ErrorKind::Other, "Out of memory to allocate page."))
+                return if let Some(vic_fid) = (&mut self.replacer).victim() {
+                    Ok(vic_fid)
+                } else {
+                    Err(Error::new(ErrorKind::Other, "Out of memory to allocate page."))
                 }
-                Ok(vic_fid)
             }
         }
     }
@@ -176,12 +178,14 @@ impl BufferPoolManager {
 
 #[cfg(test)]
 mod tests {
+    use std::io::*;
+
+    use crossbeam::queue::ArrayQueue;
+
     use crate::buffer::buffer_pool_manager::{BufferPoolManager, FrameId};
-    use crate::storage::page::page::PageId;
     use crate::buffer::replacer::ClockReplacer;
     use crate::storage::disk::disk_manager::*;
-    use std::io::*;
-    use crossbeam::queue::ArrayQueue;
+    use crate::storage::page::page::PageId;
 
     fn contains<T: Eq + Clone>(queue: &ArrayQueue<T>, item: T) -> bool {
         let size = queue.len();
