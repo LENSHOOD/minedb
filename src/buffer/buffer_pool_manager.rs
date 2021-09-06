@@ -5,11 +5,12 @@ use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::sync::RwLock;
+use crossbeam::queue::ArrayQueue;
 
 type FrameId = usize;
 pub struct BufferPoolManager {
     page_table: HashMap<PageId, FrameId>,
-    free_list: Vec<FrameId>,
+    free_list: ArrayQueue<FrameId>,
     buffer_pool: Vec<RwLock<Page>>,
     replacer: Box<dyn Replacer>,
     disk_manager: Box<dyn DiskManager>
@@ -19,7 +20,7 @@ impl BufferPoolManager {
     pub fn new_default(pool_size: usize) -> BufferPoolManager {
         BufferPoolManager {
             page_table: HashMap::new(),
-            free_list: (0..pool_size).collect(),
+            free_list: BufferPoolManager::build_full_free_list(pool_size),
             buffer_pool: BufferPoolManager::build_empty_page_pool(pool_size),
             replacer: Box::new(ClockReplacer::new(pool_size)),
             disk_manager: Box::new(FakeDiskManager::new())
@@ -29,11 +30,19 @@ impl BufferPoolManager {
     fn new(pool_size: usize, replacer: Box<dyn Replacer>, disk_manager: Box<dyn DiskManager>) -> BufferPoolManager {
         BufferPoolManager {
             page_table: HashMap::new(),
-            free_list: (0..pool_size).collect(),
+            free_list: BufferPoolManager::build_full_free_list(pool_size),
             buffer_pool: BufferPoolManager::build_empty_page_pool(pool_size),
             replacer,
             disk_manager
         }
+    }
+
+    fn build_full_free_list(pool_size: usize) -> ArrayQueue<FrameId> {
+        let free_list = ArrayQueue::new(pool_size);
+        for i in 0..pool_size {
+            free_list.push(pool_size - i - 1).unwrap();
+        }
+        free_list
     }
 
     fn build_empty_page_pool(pool_size: usize) -> Vec<RwLock<Page>> {
@@ -85,7 +94,7 @@ impl BufferPoolManager {
     fn update_page(&mut self, fid: FrameId, new_pid: PageId, new_page: bool) -> &RwLock<Page> {
         self.replacer.pin(fid);
 
-        let page = &mut self.buffer_pool[fid];
+        let page = &self.buffer_pool[fid];
         let mut page_guard = page.write().unwrap();
         if page_guard.is_dirty() {
             self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data()).unwrap();
@@ -140,7 +149,7 @@ impl BufferPoolManager {
     fn delete_page(&mut self, pid: PageId) -> io::Result<bool> {
         match self.page_table.get(&pid) {
             Some(fid) => {
-                let page = &mut self.buffer_pool[*fid];
+                let page = &self.buffer_pool[*fid];
                 let page_guard = page.write().unwrap();
                 if page_guard.get_pin_count() != 0 {
                     return Err(Error::new(ErrorKind::Other, "Cannot delete page that is in use."))
@@ -149,7 +158,7 @@ impl BufferPoolManager {
                 if page_guard.is_dirty() {
                     self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data()).unwrap();
                 }
-                self.free_list.push(*fid);
+                self.free_list.push(*fid).unwrap();
                 self.page_table.remove(&pid);
             },
             None => {}
@@ -171,6 +180,24 @@ mod tests {
     use crate::buffer::replacer::ClockReplacer;
     use crate::storage::disk::disk_manager::*;
     use std::io::*;
+    use crossbeam::queue::ArrayQueue;
+
+    fn contains<T: Eq + Clone>(queue: &ArrayQueue<T>, item: T) -> bool {
+        let size = queue.len();
+        for _ in 0..size {
+            match queue.pop() {
+                Some(ele) => {
+                    queue.push(ele.clone());
+                    if ele.eq(&item) {
+                        return true
+                    }
+                },
+                None => return false
+            }
+        }
+
+        false
+    }
 
     const TEST_POOL_SIZE: usize = 5;
     #[test]
@@ -201,7 +228,7 @@ mod tests {
 
         // then
         assert_eq!(*bpm.page_table.get(&fake_id).unwrap(), fid_to_p1);
-        assert!(!bpm.free_list.contains(&fid_to_p1));
+        assert!(!contains(&bpm.free_list, fid_to_p1));
     }
 
     #[test]
@@ -351,8 +378,8 @@ mod tests {
         // then
         assert_eq!(*bpm.page_table.get(&fake_id_1).unwrap(), fid_to_p1);
         assert_eq!(*bpm.page_table.get(&fake_id_2).unwrap(), fid_to_p2);
-        assert!(!bpm.free_list.contains(&fid_to_p1));
-        assert!(!bpm.free_list.contains(&fid_to_p2));
+        assert!(!contains(&bpm.free_list, fid_to_p1));
+        assert!(!contains(&bpm.free_list,fid_to_p2));
 
         let p1 = (&bpm.buffer_pool[fid_to_p1]).write().unwrap();
         assert_eq!(p1.get_pin_count(), 0);
@@ -421,7 +448,7 @@ mod tests {
         assert_eq!(p1.write().unwrap().get_id(), fake_id_1);
         assert_eq!(p1.write().unwrap().get_pin_count(), 1);
         assert_eq!(*bpm.page_table.get(&fake_id_1).unwrap(), fid_to_p1);
-        assert!(!bpm.free_list.contains(&fid_to_p1));
+        assert!(!contains(&bpm.free_list, fid_to_p1));
     }
 
     #[test]
@@ -473,7 +500,7 @@ mod tests {
         // then
         assert!(deleted.unwrap());
         assert!(!bpm.page_table.contains_key(&fake_id_1));
-        assert!(bpm.free_list.contains(&fid_to_p1));
+        assert!(contains(&bpm.free_list, fid_to_p1));
     }
 
     #[test]
@@ -501,7 +528,7 @@ mod tests {
         // then
         assert!(deleted.is_err());
         assert!(bpm.page_table.contains_key(&fake_id_1));
-        assert!(!bpm.free_list.contains(&fid_to_p1));
+        assert!(!contains(&bpm.free_list, fid_to_p1));
     }
 
     #[test]
