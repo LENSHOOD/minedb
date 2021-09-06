@@ -6,10 +6,11 @@ use std::io;
 use std::io::{Error, ErrorKind};
 use std::sync::RwLock;
 use crossbeam::queue::ArrayQueue;
+use dashmap::DashMap;
 
 type FrameId = usize;
 pub struct BufferPoolManager {
-    page_table: HashMap<PageId, FrameId>,
+    page_table: DashMap<PageId, FrameId>,
     free_list: ArrayQueue<FrameId>,
     buffer_pool: Vec<RwLock<Page>>,
     replacer: Box<dyn Replacer>,
@@ -19,7 +20,7 @@ pub struct BufferPoolManager {
 impl BufferPoolManager {
     pub fn new_default(pool_size: usize) -> BufferPoolManager {
         BufferPoolManager {
-            page_table: HashMap::new(),
+            page_table: DashMap::new(),
             free_list: BufferPoolManager::build_full_free_list(pool_size),
             buffer_pool: BufferPoolManager::build_empty_page_pool(pool_size),
             replacer: Box::new(ClockReplacer::new(pool_size)),
@@ -29,7 +30,7 @@ impl BufferPoolManager {
 
     fn new(pool_size: usize, replacer: Box<dyn Replacer>, disk_manager: Box<dyn DiskManager>) -> BufferPoolManager {
         BufferPoolManager {
-            page_table: HashMap::new(),
+            page_table: DashMap::new(),
             free_list: BufferPoolManager::build_full_free_list(pool_size),
             buffer_pool: BufferPoolManager::build_empty_page_pool(pool_size),
             replacer,
@@ -159,10 +160,10 @@ impl BufferPoolManager {
                     self.disk_manager.write_page(page_guard.get_id(), page_guard.get_data()).unwrap();
                 }
                 self.free_list.push(*fid).unwrap();
-                self.page_table.remove(&pid);
             },
             None => {}
         };
+        self.page_table.remove(&pid);
 
         let done = self.disk_manager.deallocate_page(pid)?;
         if !done {

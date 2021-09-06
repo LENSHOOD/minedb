@@ -13,3 +13,4 @@ fasthash = "*"
 serde = { version = "*", features = ["derive"] }
 bincode = "*"
 crossbeam = "*"
+dashmap = "*"
